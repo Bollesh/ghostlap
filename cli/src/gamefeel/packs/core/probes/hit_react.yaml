@@ -1,0 +1,10 @@
+probe: hit_react
+title: Get hit by a hazard
+description: Walk into the profile's hazard scene and measure hitstop, knockback, shake and damage.
+requires: {actions: ["{move}"]}
+needs: [hazard]
+arena: hazard
+frames: 150
+inputs:
+  - {at: 0, action: "{move}"}
+measure: [impact.hitstop_frames, impact.knockback, impact.shake, impact.hp_lost]

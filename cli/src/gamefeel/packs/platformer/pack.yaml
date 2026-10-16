@@ -1,0 +1,22 @@
+name: platformer
+title: Platformer
+description: Side-view character with gravity and a jump.
+includes: [core]
+dims: [2d]
+plane: x
+default_style: precise
+detect:
+  requires: {dims: 2d}
+  rules:
+    - {signal: player_type, args: [CharacterBody2D, RigidBody2D], weight: 1, label: 2D physics body}
+    - {signal: role_read, args: jump, weight: 3, label: reads a jump input}
+    - {signal: gravity_on_velocity, weight: 3, label: applies gravity}
+    - {signal: calls_any, args: [is_on_floor, is_on_wall], weight: 2, label: checks floor contact}
+    - {signal: role_read, args: up, weight: -1, label: reads up/down movement}
+feel:
+  jump.time_to_apex: {high: floaty, low: twitchy}
+  jump.fall_rise_ratio: {low: floaty fall (falls as slowly as it rises), high: heavy drop}
+  jump.coyote_frames: {low: unforgiving ledges}
+  jump.buffer_frames: {low: eaten jump inputs}
+  jump.variable: {low: no jump-height control, high: tap jumps are tiny}
+  jump.height_max: {low: weak jump, high: huge jump}

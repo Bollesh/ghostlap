@@ -1,0 +1,14 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://slime.gd" id="1_slime"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_slime"]
+radius = 10.0
+
+[node name="Slime" type="Area2D" groups=["enemies"]]
+script = ExtResource("1_slime")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_slime")
+
+[connection signal="body_entered" from="." to="." method="_on_body_entered"]

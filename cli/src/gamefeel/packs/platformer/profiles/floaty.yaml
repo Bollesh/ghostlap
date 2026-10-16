@@ -1,0 +1,10 @@
+# Deliberately floaty, dreamy platforming. calibrated: false.
+calibrated: false
+metrics:
+  jump.time_to_apex:    {good: [0.45, 0.70], warn: [0.35, 0.85]}
+  jump.fall_rise_ratio: {good: [0.9, 1.5], warn: [0.8, 2.0]}
+  jump.coyote_frames:   {good: [4, 10], warn: [2, 14]}
+  jump.buffer_frames:   {good: [4, 10], warn: [2, 14]}
+  jump.variable:        {good: [1.2, 3.0], warn: [1.0, 5.0]}
+  move.accel_time:      {good: [0.0, 0.3], warn: [0.0, 0.5]}
+  move.decel_time:      {good: [0.0, 0.3], warn: [0.0, 0.5]}

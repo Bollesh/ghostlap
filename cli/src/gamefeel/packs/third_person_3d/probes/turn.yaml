@@ -1,0 +1,10 @@
+probe: turn
+title: Turn to face
+description: Run forward, then reverse; measure how long the character takes to face the new direction.
+requires: {actions: [up, down]}
+arena: flat
+frames: 150
+inputs:
+  - {at: 0, action: up, hold: 60}
+  - {at: 60, action: down, hold: 90}
+measure: [move.turn_time]

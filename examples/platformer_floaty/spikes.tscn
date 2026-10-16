@@ -1,0 +1,18 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://spikes.gd" id="1_spikes"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_spikes"]
+size = Vector2(32, 16)
+
+[node name="Spikes" type="Area2D" groups=["hazard"]]
+script = ExtResource("1_spikes")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_spikes")
+
+[node name="Body" type="Polygon2D" parent="."]
+color = Color(0.8, 0.8, 0.85, 1)
+polygon = PackedVector2Array(-16, 8, -8, -8, 0, 8, 8, -8, 16, 8)
+
+[connection signal="body_entered" from="." to="." method="_on_body_entered"]

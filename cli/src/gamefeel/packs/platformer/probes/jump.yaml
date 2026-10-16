@@ -1,0 +1,10 @@
+probe: jump
+title: Tap jump vs held jump
+description: Jump from flat ground with a 1-frame tap and with a long hold.
+requires: {actions: [jump]}
+arena: flat
+frames: 150
+sweep: {var: hold, values: [1, 40]}
+inputs:
+  - {at: 5, action: jump, hold: "{hold}"}
+measure: [jump.time_to_apex, jump.height_max, jump.height_min, jump.variable, jump.fall_rise_ratio, jump.air_time]

@@ -1,0 +1,13 @@
+# Reference ranges for the shared core.
+# calibrated: false — these are starting points, not measured from reference games yet.
+# See docs/calibration.md. `good` = feels right; outside `warn` = error.
+calibrated: false
+metrics:
+  input.latency_frames: {good: [0, 1], warn: [0, 3]}
+  move.accel_time:      {good: [0.0, 0.15], warn: [0.0, 0.3]}
+  move.decel_time:      {good: [0.0, 0.12], warn: [0.0, 0.25]}
+  move.turnaround_time: {good: [0.0, 0.17], warn: [0.0, 0.33]}
+  impact.hitstop_frames: {good: [2, 8], warn: [1, 14]}
+  impact.knockback:     {good: [0.4, 3.0], warn: [0.15, 5.0]}
+  impact.hp_lost:       {good: [1, 1], warn: [1, 1]}
+  perf.frame_spikes:    {good: [0, 0], warn: [0, 2]}

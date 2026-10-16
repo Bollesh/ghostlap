@@ -1,0 +1,11 @@
+probe: attack_combo
+title: Combo window
+description: Press attack, then again k frames later; does a second hit come out?
+requires: {actions: [attack]}
+arena: flat
+frames: 120
+sweep: {var: k, from: 4, to: 40, step: 4}
+inputs:
+  - {at: 10, action: attack, hold: 1}
+  - {at: "10 + k", action: attack, hold: 1}
+measure: [attack.combo_window_frames]

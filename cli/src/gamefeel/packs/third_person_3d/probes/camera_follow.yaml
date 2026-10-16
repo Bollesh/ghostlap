@@ -1,0 +1,9 @@
+probe: camera_follow
+title: Camera follow
+description: Run forward for 2.5 s and measure how far the camera trails.
+requires: {actions: [up]}
+arena: flat
+frames: 150
+inputs:
+  - {at: 0, action: up}
+measure: [camera.follow_lag]

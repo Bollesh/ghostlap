@@ -1,0 +1,19 @@
+name: third_person_3d
+title: 3D / 2.5D character
+description: CharacterBody3D games (third-person action, 3D platformers, 2.5D side-views).
+includes: [core, platformer]
+dims: [3d]
+plane: xz
+vars: {move: up, back: down, ground: flat}
+default_style: default
+detect:
+  requires: {dims: 3d}
+  rules:
+    - {signal: player_type, args: [CharacterBody3D, RigidBody3D], weight: 3, label: 3D physics body}
+    - {signal: planar_movement_3d, weight: 2, label: forward/back movement}
+    - {signal: project_node_type, args: [Camera3D], weight: 1, label: has a 3D camera}
+    - {signal: gravity_on_velocity, weight: 1, label: applies gravity}
+feel:
+  camera.follow_lag: {high: camera drags behind, low: camera leads too far}
+  move.turn_time: {high: tank-like turning}
+  move.slope_speed_ratio: {low: slopes are sticky, high: slopes speed you up}

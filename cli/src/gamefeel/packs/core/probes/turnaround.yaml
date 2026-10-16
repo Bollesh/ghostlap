@@ -1,0 +1,10 @@
+probe: turnaround
+title: Turn around at full speed
+description: Run one way for 1 s, then hold the opposite direction.
+requires: {actions: ["{move}", "{back}"]}
+arena: "{ground}"
+frames: 150
+inputs:
+  - {at: 0, action: "{move}", hold: 60}
+  - {at: 60, action: "{back}", hold: 90}
+measure: [move.turnaround_time]

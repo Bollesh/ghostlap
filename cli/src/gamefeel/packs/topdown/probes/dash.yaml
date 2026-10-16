@@ -1,0 +1,14 @@
+probe: dash
+title: Dash
+description: Walk right, then dash; compare to walking speed.
+requires: {actions: [right, dash]}
+arena: open
+frames: 100
+calibrate:
+  frames: 60
+  inputs:
+    - {at: 0, action: right}
+inputs:
+  - {at: 0, action: right}
+  - {at: 40, action: dash, hold: 1}
+measure: [dash.distance, dash.duration_frames]

@@ -1,0 +1,9 @@
+# Tight, responsive platforming. calibrated: false — placeholder ranges, see docs/calibration.md.
+calibrated: false
+metrics:
+  jump.time_to_apex:    {good: [0.30, 0.45], warn: [0.25, 0.55]}
+  jump.fall_rise_ratio: {good: [1.3, 2.2], warn: [1.1, 2.6]}
+  jump.coyote_frames:   {good: [4, 8], warn: [2, 10]}
+  jump.buffer_frames:   {good: [4, 8], warn: [2, 12]}
+  jump.variable:        {good: [1.5, 4.0], warn: [1.2, 6.0]}
+  jump.height_max:      {good: [2.0, 5.0], warn: [1.2, 7.0]}

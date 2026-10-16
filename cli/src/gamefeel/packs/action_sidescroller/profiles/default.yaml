@@ -1,0 +1,7 @@
+# calibrated: false — placeholder ranges, see docs/calibration.md.
+calibrated: false
+metrics:
+  attack.startup_frames:      {good: [2, 6], warn: [1, 10]}
+  attack.active_frames:       {good: [2, 8], warn: [1, 14]}
+  attack.recovery_frames:     {good: [6, 20], warn: [3, 32]}
+  attack.combo_window_frames: {good: [8, 30], warn: [4, 45]}

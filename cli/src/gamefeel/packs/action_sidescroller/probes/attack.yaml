@@ -1,0 +1,9 @@
+probe: attack
+title: Single attack
+description: Press attack once from rest; track the hitbox and animation.
+requires: {actions: [attack]}
+arena: flat
+frames: 90
+inputs:
+  - {at: 10, action: attack, hold: 1}
+measure: [attack.startup_frames, attack.active_frames, attack.recovery_frames]

@@ -1,0 +1,9 @@
+probe: input_latency
+title: Input latency
+description: Press each mapped action from rest and count frames until anything visibly changes.
+arena: "{ground}"
+frames: 60
+sweep: {var: action, values: ["{move}", jump, dash, attack]}
+inputs:
+  - {at: 10, action: "{action}", hold: 20}
+measure: [input.latency_frames]

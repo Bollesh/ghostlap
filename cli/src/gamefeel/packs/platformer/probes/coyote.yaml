@@ -1,0 +1,17 @@
+probe: coyote
+title: Coyote time
+description: >
+  Walk off a ledge and press jump k frames after leaving the floor. k = -1 (the last frame on
+  the floor) is the control run: it must jump, or the probe can't tell anything.
+requires: {actions: [jump, "{move}"]}
+arena: ledge
+frames: 240
+calibrate:
+  frames: 240
+  inputs:
+    - {at: 0, action: "{move}"}
+sweep: {var: k, from: -1, to: 12}
+inputs:
+  - {at: 0, action: "{move}"}
+  - {at: "cal.left_floor + k", action: jump, hold: 1}
+measure: [jump.coyote_frames]

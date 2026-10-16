@@ -1,0 +1,7 @@
+# calibrated: false — placeholder ranges, see docs/calibration.md.
+calibrated: false
+metrics:
+  move.diagonal_ratio:  {good: [0.95, 1.05], warn: [0.9, 1.15]}
+  dash.distance:        {good: [2.0, 6.0], warn: [1.0, 9.0]}
+  dash.duration_frames: {good: [6, 15], warn: [3, 24]}
+  dash.cooldown_frames: {good: [12, 45], warn: [4, 90]}

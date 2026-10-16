@@ -1,0 +1,9 @@
+probe: run_start_stop
+title: Run, then stop
+description: From rest, hold the move direction for 1 s, then let go.
+requires: {actions: ["{move}"]}
+arena: "{ground}"
+frames: 120
+inputs:
+  - {at: 0, action: "{move}", hold: 60}
+measure: [move.top_speed, move.accel_time, move.decel_time, perf.frame_spikes]

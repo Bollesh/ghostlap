@@ -1,0 +1,14 @@
+probe: slope
+title: Walk up a 30° slope
+description: Run forward on flat ground (calibration), then up a 30° ramp in the same direction.
+requires: {actions: [up]}
+arena: slope
+frames: 240
+calibrate:
+  arena: flat
+  frames: 120
+  inputs:
+    - {at: 0, action: up}
+inputs:
+  - {at: 0, action: up}
+measure: [move.slope_speed_ratio]

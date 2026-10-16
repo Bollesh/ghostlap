@@ -1,0 +1,22 @@
+name: topdown
+title: Top-down
+description: Character moving freely in 2D without gravity (action RPGs, twin-stick, Zelda-likes).
+includes: [core]
+dims: [2d]
+plane: xy
+vars: {move: right, back: left, ground: open}
+default_style: default
+detect:
+  requires: {dims: 2d}
+  rules:
+    - {signal: role_read, args: up, weight: 3, label: reads up movement}
+    - {signal: role_read, args: down, weight: 2, label: reads down movement}
+    - {signal: role_missing, args: jump, weight: 2, label: no jump}
+    - {signal: gravity_on_velocity, weight: -3, label: applies gravity}
+    - {signal: calls_any, args: [get_vector], weight: 1, label: uses Input.get_vector}
+    - {signal: y_sort, weight: 1, label: y-sorted scene}
+feel:
+  move.diagonal_ratio: {high: diagonals are faster (input not normalized), low: diagonals are slow}
+  dash.distance: {low: dash barely moves, high: dash overshoots}
+  dash.duration_frames: {high: dash drags on, low: dash is a blink}
+  dash.cooldown_frames: {high: dash feels locked out, low: dash spammable}

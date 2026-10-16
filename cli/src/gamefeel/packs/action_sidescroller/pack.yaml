@@ -1,0 +1,20 @@
+name: action_sidescroller
+title: Side-scrolling action
+description: Side-view character that attacks (brawlers, metroidvanias, action platformers).
+includes: [core, platformer]
+dims: [2d]
+plane: x
+default_style: default
+detect:
+  requires: {dims: 2d}
+  rules:
+    - {signal: role_read, args: attack, weight: 3, label: reads an attack input}
+    - {signal: node_in_player, args: {types: [Area2D], name: "hit_?box|attack|weapon|sword|slash|melee"}, weight: 2, label: has an attack hitbox}
+    - {signal: player_property, args: "^(health|hp|hit_points)$", weight: 1, label: has health}
+    - {signal: group_exists, args: "enem|hazard|mob", weight: 1, label: enemies or hazards exist}
+    - {signal: gravity_on_velocity, weight: 1, label: side view with gravity}
+feel:
+  attack.startup_frames: {high: slow attacks}
+  attack.active_frames: {low: hard-to-land hits, high: lingering hitboxes}
+  attack.recovery_frames: {high: long recovery (feels stuck after attacking), low: spammy attacks}
+  attack.combo_window_frames: {low: combos are hard to input, high: combos trigger by accident}

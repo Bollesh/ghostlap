@@ -1,0 +1,10 @@
+{
+  "name": "gamefeel",
+  "version": "0.1.0",
+  "description": "Understand a Godot 4 game and measure how it feels (jump arcs, coyote time, acceleration, dashes, hitstop...) with concrete, file:line-linked fixes. Needs the gamefeel CLI and Godot 4.3+.",
+  "author": { "name": "Bollesh" },
+  "homepage": "https://github.com/Bollesh/gamefeel",
+  "repository": "https://github.com/Bollesh/gamefeel",
+  "license": "MIT",
+  "keywords": ["godot", "game-feel", "gamedev", "playtesting"]
+}

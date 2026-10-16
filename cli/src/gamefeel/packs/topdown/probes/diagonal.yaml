@@ -1,0 +1,11 @@
+probe: diagonal
+title: Straight vs diagonal speed
+description: Hold right for 1 s, release, then hold right+down for 1 s.
+requires: {actions: [right, down]}
+arena: open
+frames: 160
+inputs:
+  - {at: 0, action: right, hold: 60}
+  - {at: 90, action: right, hold: 60}
+  - {at: 90, action: down, hold: 60}
+measure: [move.diagonal_ratio]

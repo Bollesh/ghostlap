@@ -1,0 +1,16 @@
+probe: dash_cooldown
+title: Dash cooldown
+description: Dash, then try to dash again k frames later.
+requires: {actions: [right, dash]}
+arena: open
+frames: 130
+calibrate:
+  frames: 60
+  inputs:
+    - {at: 0, action: right}
+sweep: {var: k, from: 4, to: 64, step: 4}
+inputs:
+  - {at: 0, action: right}
+  - {at: 20, action: dash, hold: 1}
+  - {at: "20 + k", action: dash, hold: 1}
+measure: [dash.cooldown_frames]

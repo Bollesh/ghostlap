@@ -1,0 +1,12 @@
+{
+  "name": "gamefeel",
+  "description": "Game-feel tools for Godot",
+  "owner": { "name": "Bollesh" },
+  "plugins": [
+    {
+      "name": "gamefeel",
+      "source": "./plugin",
+      "description": "Measure and fix game feel in Godot 4 projects"
+    }
+  ]
+}

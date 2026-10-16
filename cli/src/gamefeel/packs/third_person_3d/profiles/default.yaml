@@ -1,0 +1,10 @@
+# calibrated: false — placeholder ranges, see docs/calibration.md.
+calibrated: false
+metrics:
+  camera.follow_lag:      {good: [0.0, 0.25], warn: [-0.1, 0.5]}
+  move.turn_time:         {good: [0.0, 0.3], warn: [0.0, 0.5]}
+  move.slope_speed_ratio: {good: [0.8, 1.05], warn: [0.6, 1.2]}
+  jump.time_to_apex:      {good: [0.3, 0.5], warn: [0.25, 0.65]}
+  # a 1.8 m character usually jumps 0.5–1.5 m; many 3D games have a fixed-height jump
+  jump.height_max:        {good: [0.4, 2.0], warn: [0.25, 3.0]}
+  jump.variable:          {good: [1.0, 4.0], warn: [1.0, 6.0]}
