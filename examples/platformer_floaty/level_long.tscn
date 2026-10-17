@@ -1,0 +1,148 @@
+[gd_scene load_steps=14 format=3]
+
+[ext_resource type="PackedScene" path="res://player.tscn" id="1_player"]
+[ext_resource type="PackedScene" path="res://spikes.tscn" id="2_spikes"]
+[ext_resource type="Script" path="res://goal.gd" id="3_goal"]
+[ext_resource type="Script" path="res://pit.gd" id="4_pit"]
+
+[sub_resource type="RectangleShape2D" id="Rect_Ground1"]
+size = Vector2(1100, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_Ground2"]
+size = Vector2(740, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_Step"]
+size = Vector2(200, 90)
+
+[sub_resource type="RectangleShape2D" id="Rect_Ledge"]
+size = Vector2(250, 24)
+
+[sub_resource type="RectangleShape2D" id="Rect_Ground3"]
+size = Vector2(800, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_Ground4"]
+size = Vector2(660, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_WallLeft"]
+size = Vector2(40, 720)
+
+[sub_resource type="RectangleShape2D" id="Rect_WallRight"]
+size = Vector2(40, 720)
+
+[sub_resource type="RectangleShape2D" id="Rect_goal"]
+size = Vector2(40, 80)
+
+[sub_resource type="RectangleShape2D" id="Rect_pit"]
+size = Vector2(5000, 40)
+
+[node name="LevelLong" type="Node2D"]
+
+[node name="Ground1" type="StaticBody2D" parent="."]
+position = Vector2(250, 300)
+
+[node name="Visual" type="Polygon2D" parent="Ground1"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-550, -20, 550, -20, 550, 20, -550, 20)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground1"]
+shape = SubResource("Rect_Ground1")
+
+[node name="Ground2" type="StaticBody2D" parent="."]
+position = Vector2(1330, 300)
+
+[node name="Visual" type="Polygon2D" parent="Ground2"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-370, -20, 370, -20, 370, 20, -370, 20)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground2"]
+shape = SubResource("Rect_Ground2")
+
+[node name="Step" type="StaticBody2D" parent="."]
+position = Vector2(1600, 235)
+
+[node name="Visual" type="Polygon2D" parent="Step"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-100, -45, 100, -45, 100, 45, -100, 45)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Step"]
+shape = SubResource("Rect_Step")
+
+[node name="Ledge" type="StaticBody2D" parent="."]
+position = Vector2(1925, 112)
+
+[node name="Visual" type="Polygon2D" parent="Ledge"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-125, -12, 125, -12, 125, 12, -125, 12)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ledge"]
+shape = SubResource("Rect_Ledge")
+
+[node name="Ground3" type="StaticBody2D" parent="."]
+position = Vector2(2600, 300)
+
+[node name="Visual" type="Polygon2D" parent="Ground3"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-400, -20, 400, -20, 400, 20, -400, 20)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground3"]
+shape = SubResource("Rect_Ground3")
+
+[node name="Ground4" type="StaticBody2D" parent="."]
+position = Vector2(3470, 300)
+
+[node name="Visual" type="Polygon2D" parent="Ground4"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-330, -20, 330, -20, 330, 20, -330, 20)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground4"]
+shape = SubResource("Rect_Ground4")
+
+[node name="WallLeft" type="StaticBody2D" parent="."]
+position = Vector2(-320, -40)
+
+[node name="Visual" type="Polygon2D" parent="WallLeft"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-20, -360, 20, -360, 20, 360, -20, 360)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallLeft"]
+shape = SubResource("Rect_WallLeft")
+
+[node name="WallRight" type="StaticBody2D" parent="."]
+position = Vector2(3820, -40)
+
+[node name="Visual" type="Polygon2D" parent="WallRight"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-20, -360, 20, -360, 20, 360, -20, 360)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallRight"]
+shape = SubResource("Rect_WallRight")
+
+[node name="Spikes1" parent="." instance=ExtResource("2_spikes")]
+position = Vector2(450, 272)
+
+[node name="Spikes2" parent="." instance=ExtResource("2_spikes")]
+position = Vector2(2600, 272)
+
+[node name="Goal" type="Area2D" parent="."]
+position = Vector2(3600, 240)
+script = ExtResource("3_goal")
+
+[node name="Visual" type="Polygon2D" parent="Goal"]
+color = Color(1, 0.85, 0.2, 1)
+polygon = PackedVector2Array(-20, -40, 20, -40, 20, 40, -20, 40)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Goal"]
+shape = SubResource("Rect_goal")
+
+[node name="Pit" type="Area2D" parent="."]
+position = Vector2(1750, 700)
+script = ExtResource("4_pit")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Pit"]
+shape = SubResource("Rect_pit")
+
+[node name="Player" parent="." instance=ExtResource("1_player")]
+position = Vector2(0, 250)
+
+[connection signal="body_entered" from="Goal" to="Goal" method="_on_body_entered"]
+[connection signal="body_entered" from="Pit" to="Pit" method="_on_body_entered"]

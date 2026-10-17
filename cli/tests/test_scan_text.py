@@ -23,8 +23,8 @@ def test_incremental_scan(example):
     root = example("platformer_floaty")
     p = Project(root)
     r = scan(p, text_only=True)
-    assert r.counts["changed"] == 6 and r.mode == "text"
-    assert scan(p, text_only=True).counts["unchanged"] == 5
+    assert r.counts["changed"] == 9 and r.mode == "text"
+    assert scan(p, text_only=True).counts["unchanged"] == 8
 
     time.sleep(0.01)
     os.utime(root / "player.gd")

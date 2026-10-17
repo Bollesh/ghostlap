@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from ..detect.detect import SPATIAL_VIEWS
 from ..graph.store import Graph
 from ..probes.run import TRACK_PROP_RE, _player_props
 from ..project import Project
 
 DEFAULT_VIEWS = ["ui", "state"]
-SPATIAL_VIEWS = ["player", "near", "map", "ui"]
 
 
 def bridge_profile(project: Project, profile: dict | None) -> dict:

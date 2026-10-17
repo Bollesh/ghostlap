@@ -6,6 +6,7 @@
     ghostlap graph profile        compact JSON summary for an agent
     ghostlap graph query NAME ..  canned graph queries (who-reads, exports-of, ...)
     ghostlap graph sql "..."      read-only SQL
+    ghostlap play start|look|step|until|eval|note|status|end|kill   Claude plays the game
     ghostlap feel probe list|validate|run
     ghostlap feel analyze              metrics + findings for the latest run
     ghostlap feel check                probe run + analyze
@@ -441,6 +442,10 @@ def build_parser() -> argparse.ArgumentParser:
     q2 = gs.add_parser("sql", parents=[common])
     q2.add_argument("query")
     s.set_defaults(fn=cmd_graph)
+
+    from .play.commands import add_parser as add_play_parser
+
+    add_play_parser(sub, common)
 
     s = sub.add_parser("feel", help="game-feel toolkit: probes, metrics, verified fixes, clips")
     fs = s.add_subparsers(dest="feel_cmd", required=True)

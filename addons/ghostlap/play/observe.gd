@@ -11,7 +11,7 @@
 # Everything is read-only: views never call game methods except _ghostlap_state().
 extends RefCounted
 
-const HAZARD_RE := "spike|hazard|lava|kill|death|deadly|trap|saw|acid|thorn|danger|damage"
+const HAZARD_RE := "spike|hazard|lava|kill|death|deadly|trap|saw|acid|thorn|danger|damage|void|abyss|bottomless|(^|_)pit|pit(\\d*$|_)"
 const ENEMY_RE := "enemy|enemies|slime|mob|monster|bat|goblin|skeleton|zombie|boss|foe"
 const PICKUP_RE := "coin|gem|pickup|collect|item|key|star|heart|potion|ammo|loot"
 const GOAL_RE := "goal|flag|exit|finish|portal|door|checkpoint|lantern|target"
@@ -81,7 +81,20 @@ func look(views: Array, opts: Dictionary) -> Dictionary:
 
 # ---------------------------------------------------------------- player
 
+var _player_cache: Node = null
+var _player_cache_it := -1
+
+
+## Cached per engine iteration: goal and `until` checks call this every frame.
 func find_player() -> Node:
+	var it := Engine.get_process_frames()
+	if it != _player_cache_it or (_player_cache != null and not is_instance_valid(_player_cache)):
+		_player_cache = _find_player()
+		_player_cache_it = it
+	return _player_cache
+
+
+func _find_player() -> Node:
 	var cs := tree.current_scene
 	if cs == null:
 		return null

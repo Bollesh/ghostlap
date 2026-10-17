@@ -72,6 +72,12 @@ class Bridge extends Node:
 	var quitting := false
 	var observe: RefCounted
 	var headless := false
+	var ctx: ExprContext
+	var goal_expr: Expression = null    # `config goal=`: checked every frame
+	var goal_met_at := -1
+	var goal_error := ""                # the last check's error ("" when it evaluated fine)
+	var until_expr: Expression = null   # set while an `until` runs
+	var until_result := {}
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
 		tree = t
@@ -89,6 +95,7 @@ class Bridge extends Node:
 			var parsed = JSON.parse_string(pf.get_as_text())
 			prof = parsed if parsed is Dictionary else {}
 		observe = Observe.new(tree, prof)
+		ctx = ExprContext.new(tree, observe)
 		if not headless:
 			_detach_window_from_desktop_input()
 		if server.listen(0, "127.0.0.1") != OK:
@@ -127,11 +134,24 @@ class Bridge extends Node:
 		else:
 			frame += 1
 		hashes.append(_hash())
+		_check_goal()
 		if frames_left > 0:
 			frames_left -= 1
+			if until_expr != null:
+				_check_until()
 		if frames_left == 0:
 			if pending_peer != null:
-				_reply(pending_peer, pending_id, {"ok": true, "result": _look()})
+				var res := _look()
+				if until_expr != null:
+					if until_result.is_empty():
+						until_result = {"met": false, "reason": "max"}
+					res["until"] = until_result
+					until_expr = null
+					# inputs scheduled past the stop never happen
+					for f in schedule.keys():
+						if f > frame:
+							schedule.erase(f)
+				_reply(pending_peer, pending_id, {"ok": true, "result": res})
 				pending_peer = null
 				pending_id = null
 			_serve_until_step()
@@ -213,7 +233,9 @@ class Bridge extends Node:
 			"shot":
 				_reply(peer, id, {"ok": true, "result": _shot(int(a.get("width", 960)))})
 			"eval":
-				_reply(peer, id, _eval(str(a.get("expr", ""))))
+				_reply(peer, id, _eval(str(a.get("expr", "")), bool(a.get("write", false))))
+			"config":
+				_reply(peer, id, _config(a))
 			"hashes":
 				var lo := int(a.get("from", 0))
 				_reply(peer, id, {"ok": true, "result": Array(hashes.slice(lo))})
@@ -227,6 +249,25 @@ class Bridge extends Node:
 					_reply(peer, id, {"ok": false, "error": bad})
 					return false
 				frames_left = n
+				pending_peer = peer
+				pending_id = id
+				return true
+			"until":
+				var mx := int(a.get("max", 600))
+				if mx < 1:
+					_reply(peer, id, {"ok": false, "error": "max must be >= 1"})
+					return false
+				var c = _compile(str(a.get("expr", "")), false)
+				if c is String:
+					_reply(peer, id, {"ok": false, "error": c})
+					return false
+				var bad_u := _schedule_inputs(a.get("inputs", []), mx)
+				if bad_u != "":
+					_reply(peer, id, {"ok": false, "error": bad_u})
+					return false
+				until_expr = c
+				until_result = {}
+				frames_left = mx
 				pending_peer = peer
 				pending_id = id
 				return true
@@ -267,6 +308,10 @@ class Bridge extends Node:
 			var pressed := bool(inp.get("pressed", true))
 			if inp.has("action"):
 				var action := str(inp["action"])
+				var mapped := _mapped_event(action, pressed) if _action_events_reset_others else null
+				if mapped != null:
+					Input.parse_input_event(mapped)
+					continue
 				var ev := InputEventAction.new()
 				ev.action = action
 				ev.pressed = pressed
@@ -291,6 +336,28 @@ class Bridge extends Node:
 				Input.parse_input_event(mev)
 		schedule.erase(f)
 
+	## Godot < 4.4: InputMap.event_get_index() ignores whether an InputEventAction matches, so
+	## parsing one updates every action, releasing all the others (fixed in 4.4). There, an action
+	## is injected as its first mapped key/button event instead, which matches only its own actions.
+	var _action_events_reset_others: bool = Engine.get_version_info()["hex"] < 0x040400
+
+	func _mapped_event(action: String, pressed: bool) -> InputEvent:
+		for e in InputMap.action_get_events(action):
+			if e is InputEventKey or e is InputEventJoypadButton or e is InputEventMouseButton:
+				var d: InputEvent = e.duplicate()
+				d.pressed = pressed
+				if d is InputEventKey:
+					if d.keycode == KEY_NONE and d.physical_keycode != KEY_NONE:
+						d.keycode = d.physical_keycode
+				elif d is InputEventMouseButton and pressed:
+					d.button_mask = 1 << (d.button_index - 1)
+				return d
+			if e is InputEventJoypadMotion:
+				var m: InputEventJoypadMotion = e.duplicate()
+				m.axis_value = signf(e.axis_value) if pressed else 0.0
+				return m
+		return null
+
 	# ------------------------------------------------------------ state
 
 	func _look() -> Dictionary:
@@ -304,6 +371,8 @@ class Bridge extends Node:
 			"paused": tree.paused,
 			"scene": cs.scene_file_path if cs != null else "",
 			"hash": hashes[frame] if frame >= 0 and frame < hashes.size() else "",
+			"goal_met_at": goal_met_at,
+			"goal_error": goal_error,
 		}
 
 	## Positions and velocities of every 2D/3D node in the current scene, rounded so float
@@ -327,14 +396,84 @@ class Bridge extends Node:
 				stack.append(c)
 		return "|".join(parts).md5_text()
 
-	func _eval(src: String) -> Dictionary:
+	# ------------------------------------------------------------ expressions
+
+	const INPUT_NAMES := ["player", "scene", "tree", "Input", "InputMap", "Engine", "ProjectSettings", "DisplayServer"]
+	## Calls that change the game, its input or its RNG. A name match, not a sandbox: it stops
+	## accidents, not intent (a game's own `take_damage()` still gets through).
+	static var _writes := RegEx.create_from_string(
+			"(^|[^\\w])(set\\w*|queue_free|free|call\\w*|emit\\w*|add_child|remove_child|change_scene\\w*|reload\\w*|quit"
+			+ "|rand\\w*|seed|randomize|action_press|action_release|parse_input_event|warp_mouse"
+			+ "|connect|disconnect|play\\w*|stop|start|apply_\\w*|append\\w*|push_\\w*|pop_\\w*|erase|clear|insert|remove_at|resize|fill|sort\\w*|shuffle|reverse|merge)\\s*\\(")
+
+	## Returns an Expression, or an error string.
+	func _compile(src: String, allow_write: bool):
+		if src.strip_edges() == "":
+			return "empty expression"
+		if not allow_write and _writes.search(src) != null:
+			return "expression calls a method that changes the game (%s); eval --write allows it" % _writes.search(src).get_string(2)
 		var e := Expression.new()
-		if e.parse(src, PackedStringArray(["scene", "tree", "Input", "InputMap", "Engine", "ProjectSettings", "DisplayServer"])) != OK:
-			return {"ok": false, "error": "parse: " + e.get_error_text()}
-		var v = e.execute([tree.current_scene, tree, Input, InputMap, Engine, ProjectSettings, DisplayServer], tree.current_scene, false)
+		if e.parse(src, PackedStringArray(INPUT_NAMES)) != OK:
+			return "parse: " + e.get_error_text()
+		return e
+
+	func _run(e: Expression) -> Array:
+		var v = e.execute([observe.find_player(), tree.current_scene, tree, Input, InputMap, Engine, ProjectSettings, DisplayServer], ctx, false)
 		if e.has_execute_failed():
-			return {"ok": false, "error": "execute: " + e.get_error_text()}
-		return {"ok": true, "result": _jsonable(v)}
+			return [false, e.get_error_text()]
+		return [true, v]
+
+	func _eval(src: String, allow_write: bool) -> Dictionary:
+		var c = _compile(src, allow_write)
+		if c is String:
+			return {"ok": false, "error": c}
+		var r := _run(c)
+		if not r[0]:
+			return {"ok": false, "error": "execute: " + str(r[1])}
+		var out := {"ok": true, "result": _jsonable(r[1])}
+		if allow_write and _writes.search(src) != null:
+			out["write"] = true
+		return out
+
+	func _config(a: Dictionary) -> Dictionary:
+		if a.has("goal"):
+			var g := str(a["goal"])
+			if g == "":
+				goal_expr = null
+			else:
+				var c = _compile(g, false)
+				if c is String:
+					return {"ok": false, "error": "goal: " + c}
+				goal_expr = c
+			goal_met_at = -1
+			goal_error = ""
+			_check_goal()
+		return {"ok": true, "result": {"goal_met_at": goal_met_at, "goal_error": goal_error}}
+
+	## Errors don't switch the check off: they are reported in every look until it evaluates again
+	## (a freed or not-yet-spawned node is often temporary).
+	func _check_goal() -> void:
+		# no scene for a frame while one reloads or changes
+		if goal_expr == null or goal_met_at >= 0 or tree.current_scene == null:
+			return
+		var r := _run(goal_expr)
+		goal_error = "" if r[0] else str(r[1])
+		if r[0] and _truthy(r[1]):
+			goal_met_at = frame
+
+	func _check_until() -> void:
+		if tree.current_scene == null:
+			return
+		var r := _run(until_expr)
+		if not r[0]:
+			until_result = {"met": false, "reason": "error", "error": str(r[1])}
+			frames_left = 0
+		elif _truthy(r[1]):
+			until_result = {"met": true, "reason": "true"}
+			frames_left = 0
+
+	static func _truthy(v) -> bool:
+		return bool(v) if typeof(v) in [TYPE_BOOL, TYPE_INT, TYPE_FLOAT] else v != null
 
 	func _jsonable(v):
 		match typeof(v):
@@ -408,3 +547,38 @@ class Bridge extends Node:
 			f.store_string(msg)
 			f.close()
 		_quit()
+
+
+## The base object of every expression: helpers, plus the current scene's own members
+## (`score` reads current_scene.score).
+class ExprContext extends RefCounted:
+	var tree: SceneTree
+	var observe: RefCounted
+
+	func _init(t: SceneTree, o: RefCounted) -> void:
+		tree = t
+		observe = o
+
+	func node(path: String) -> Node:
+		if path.begins_with("/root"):
+			return tree.root.get_node_or_null(path)
+		return tree.current_scene.get_node_or_null(path) if tree.current_scene != null else null
+
+	func group(name: String) -> Array:
+		return tree.get_nodes_in_group(name)
+
+	## Distance between two nodes (or a node and the player) in player heights.
+	func dist_h(a, b = null) -> float:
+		var na: Node = node(a) if a is String else a
+		var nb: Node = observe.find_player() if b == null else (node(b) if b is String else b)
+		if na == null or nb == null or not ("global_position" in na) or not ("global_position" in nb):
+			return INF
+		var p: Node = observe.find_player()
+		var h: float = observe.measure_size(p).y if p != null else 1.0
+		return na.global_position.distance_to(nb.global_position) / maxf(h, 0.001)
+
+	func _get(property: StringName):
+		var cs := tree.current_scene
+		if cs != null and property in cs:
+			return cs.get(property)
+		return null
