@@ -1,0 +1,17 @@
+; Fixture for the play bridge (spike 1.1): logs on which engine iteration each input is seen,
+; and has hitstop (time_scale 0), pause, a reload, a moving body and seeded randomness.
+config_version=5
+
+[application]
+
+config/name="bridge_probe"
+run/main_scene="res://main.tscn"
+
+[input]
+
+jump={"deadzone": 0.5, "events": []}
+move_left={"deadzone": 0.5, "events": []}
+move_right={"deadzone": 0.5, "events": []}
+hitstop={"deadzone": 0.5, "events": []}
+pause={"deadzone": 0.5, "events": []}
+reload={"deadzone": 0.5, "events": []}
