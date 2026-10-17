@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -38,17 +39,28 @@ class Bridge:
 
     @classmethod
     def launch(cls, godot: str, project_dir: Path, scene: str, session_dir: Path, *, seed: int = 0,
-               physics_tps: int = 60, headless: bool = True, timeout: float = 60.0, extra_args: list[str] | None = None) -> "Bridge":
+               physics_tps: int = 60, display: str = "headless", profile: dict | None = None,
+               timeout: float = 60.0, extra_args: list[str] | None = None) -> "Bridge":
+        """display: "headless" (fastest, no screenshots), "window" (visible; desktop input is
+        ignored), or "offscreen" (xvfb-run when available, else a window)."""
         session_dir = Path(session_dir).resolve()
         session_dir.mkdir(parents=True, exist_ok=True)
         for stale in ("bridge.json", "bridge_error.txt"):
             (session_dir / stale).unlink(missing_ok=True)
-        cmd = [godot]
-        if headless:
+        if display not in ("headless", "window", "offscreen"):
+            raise BridgeError(f"unknown display mode {display!r}")
+        cmd = []
+        if display == "offscreen" and shutil.which("xvfb-run"):
+            cmd = ["xvfb-run", "-a", "-s", "-screen 0 1280x720x24"]
+        cmd.append(godot)
+        if display == "headless":
             cmd.append("--headless")
         cmd += ["--path", str(Path(project_dir).resolve()), "--fixed-fps", str(physics_tps),
                 "--script", str(addon_dir() / "play" / "bridge.gd"), *(extra_args or []), "--",
                 f"--session={session_dir}", f"--scene={scene}", f"--seed={seed}"]
+        if profile is not None:
+            (session_dir / "profile.json").write_text(json.dumps(profile, indent=1))
+            cmd.append(f"--profile={session_dir / 'profile.json'}")
         log = open(session_dir / "godot.log", "w")
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
@@ -60,6 +72,9 @@ class Bridge:
                 return cls.attach(session_dir)
             if proc.poll() is not None or (session_dir / "bridge_error.txt").is_file():
                 raise BridgeError(f"Godot exited before the bridge was ready:\n{_tail(session_dir / 'godot.log')}")
+            if _bridge_broken(session_dir / "godot.log"):
+                proc.kill()
+                raise BridgeError(f"the ghostlap bridge failed to load:\n{_tail(session_dir / 'godot.log')}")
             time.sleep(0.05)
         proc.kill()
         raise BridgeError(f"bridge not ready after {timeout:.0f}s:\n{_tail(session_dir / 'godot.log')}")
@@ -129,8 +144,12 @@ class Bridge:
             raise BridgeError(f"{cmd}: {resp.get('error')}")
         return resp
 
-    def look(self) -> dict:
-        return self.request("look")["result"]
+    def look(self, views: list[str] | None = None, shot: bool = False, **opts) -> dict:
+        """opts: radius (player heights, for `near`), map_w / map_h (cells), shot_width (px)."""
+        return self.request("look", views=views or [], shot=shot, **opts)["result"]
+
+    def shot(self, width: int = 960) -> dict:
+        return self.request("shot", width=width)["result"]
 
     def step(self, frames: int, inputs: list[dict] | None = None, timeout: float | None = None) -> dict:
         # generous default: headless games run far faster than real time
@@ -142,6 +161,15 @@ class Bridge:
 
     def hashes(self, start: int = 0) -> list[str]:
         return self.request("hashes", **{"from": start})["result"]
+
+
+def _bridge_broken(log: Path) -> bool:
+    """Our own scripts failed to compile (Godot keeps running with a dead main loop)."""
+    try:
+        text = log.read_text(errors="replace")
+    except OSError:
+        return False
+    return "Failed to load script" in text and "ghostlap/play/" in text
 
 
 def _tail(path: Path, n: int = 30) -> str:

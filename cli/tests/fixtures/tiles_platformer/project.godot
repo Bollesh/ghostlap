@@ -1,0 +1,14 @@
+; Fixture for the `map` / `grid` views: a TileMapLayer platformer built in code (solid and
+; one-way tiles, a spike tile layer), with a coin and a goal flag.
+config_version=5
+
+[application]
+
+config/name="tiles_platformer"
+run/main_scene="res://main.tscn"
+
+[input]
+
+move_left={"deadzone": 0.5, "events": []}
+move_right={"deadzone": 0.5, "events": []}
+jump={"deadzone": 0.5, "events": []}

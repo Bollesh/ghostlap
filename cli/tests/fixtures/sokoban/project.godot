@@ -1,0 +1,15 @@
+; Fixture for the `grid` view: a Sokoban board (TileMapLayers for floor, walls and goals; boxes and
+; the player are grid-snapped nodes). Solvable from the text view alone.
+config_version=5
+
+[application]
+
+config/name="sokoban"
+run/main_scene="res://main.tscn"
+
+[input]
+
+move_up={"deadzone": 0.5, "events": []}
+move_down={"deadzone": 0.5, "events": []}
+move_left={"deadzone": 0.5, "events": []}
+move_right={"deadzone": 0.5, "events": []}

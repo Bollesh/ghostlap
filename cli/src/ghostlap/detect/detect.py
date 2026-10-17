@@ -17,6 +17,11 @@ from .signals import DetectCtx, evaluate
 PLAYER_NAME_RE = re.compile(r"player|hero|character|protagonist|avatar", re.I)
 HAZARD_RE = re.compile(r"hazard|spike|enemy|enemies|trap|damage|kill|lava|saw", re.I)
 UI_RE = re.compile(r"(^|/)(ui|hud|menu|gui)(/|_|\.|$)", re.I)
+TURN_RE = re.compile(r"(^|_)(end|next|start|begin)_?turn|^_?on_turn|turn_(ended|started|changed|over)", re.I)
+GRID_TYPES = {"TileMapLayer", "TileMap", "GridContainer"}
+CONTROL_RE = re.compile(r"(Control|Container|Button|Label|Panel|TextureRect|LineEdit|TextEdit|Slider|"
+                        r"ProgressBar|ItemList|Tree|TabBar|ColorRect|NinePatchRect|Box|Separator)$")
+SPATIAL_VIEWS = ["player", "near", "map", "ui"]
 
 MECHANICS: list[tuple[str, dict]] = [
     ("jump", {"role": "jump"}),
@@ -214,6 +219,34 @@ def detect_hazards(g: Graph, nodes: list[dict], player_scene: str | None) -> lis
     return [{"scene": s, "why": w} for s, w in sorted(out.items())]
 
 
+def detect_game_type(g: Graph, nodes: list[dict], genres: list[dict], player: dict | None) -> dict:
+    """Which look views (design §3.3.0) describe this game best."""
+    spatial = [x["pack"] for x in genres if x["score"] >= 0.6]
+    main = ((g.node("project") or {}).get("props") or {}).get("main_scene")
+    types: dict[str, list[str]] = {}
+    for n in nodes:
+        types.setdefault(n["file"], []).append(node_type(g, n) or n["props"].get("type") or "")
+    turn = next((f["name"] for kind in ("Function", "Signal") for f in g.nodes(kind) if TURN_RE.search(f["name"] or "")), None)
+    grid_files = sorted(f for f, ts in types.items() if GRID_TYPES & set(ts))
+    main_types = types.get(main, [])
+    ui_share = sum(1 for x in main_types if CONTROL_RE.search(x)) / max(1, len(main_types))
+    main_root = next((node_type(g, n) or "" for n in nodes if n["file"] == main and n["path"] == "."), "")
+    if turn:
+        # a board, a map with a player, or (card games) just the UI
+        views = (["grid", "state", "ui"] if grid_files else ["map", "state", "ui"] if spatial and player
+                 else ["ui", "state"])
+        return {"type": "turn_based", "views": views, "why": f"turn logic: {turn}()"}
+    if spatial and player:
+        views = list(SPATIAL_VIEWS)
+        return {"type": "spatial", "views": views, "why": f"genre {spatial[0]} with a controlled player"}
+    if grid_files:
+        return {"type": "grid", "views": ["grid", "ui", "state"], "why": f"tile/grid nodes in {grid_files[0]}"}
+    if main and (CONTROL_RE.search(main_root) or ui_share >= 0.6):
+        return {"type": "ui", "views": ["ui", "state"],
+                "why": f"main scene is mostly UI ({round(ui_share * 100)}% Controls)"}
+    return {"type": "unknown", "views": ["ui", "state"], "why": "no strong signal; take a screenshot on the first look"}
+
+
 def detect(g: Graph, project_root: Path | None = None) -> dict[str, Any]:
     packs = load_packs(project_root)
     nodes = _scene_nodes(g)
@@ -250,6 +283,7 @@ def detect(g: Graph, project_root: Path | None = None) -> dict[str, Any]:
         "hazards": detect_hazards(g, nodes, best["scene"] if best else None),
         "camera": [{"node": c["path"], "type": c["props"].get("type"), "scene": c["file"]} for c in cameras],
         "hitboxes": [{"node": h["path"], "scene": h["file"]} for h in hitboxes],
+        "game_type": detect_game_type(g, nodes, genres, best),
     }
 
 
@@ -280,6 +314,7 @@ def draft_profile(det: dict, packs: dict[str, Pack]) -> dict:
         "levels": [lv["scene"] for lv in det.get("levels", [])],
         "hazard": det["hazards"][0]["scene"] if det.get("hazards") else None,
         "hitboxes": [h["node"] for h in det.get("hitboxes", [])],
+        "views": (det.get("game_type") or {}).get("views") or ["ui", "state"],
         "accepted": {},
     }
 

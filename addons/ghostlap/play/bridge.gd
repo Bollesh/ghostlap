@@ -1,7 +1,10 @@
 # ghostlap play bridge: runs the user's game and freezes it between commands.
 #
 #   godot [--headless] --path <project> --fixed-fps <physics_tps> --script <abs>/bridge.gd -- \
-#       --session=<abs dir> --scene=res://level.tscn [--seed=N]
+#       --session=<abs dir> --scene=res://level.tscn [--seed=N] [--profile=<abs profile.json>]
+#
+# profile.json (written by the CLI from .ghostlap/profile.yaml): player {scene, node}, dims,
+# track_props, hazard, views (default look views), state_nodes. See observe.gd.
 #
 # The start scene becomes current_scene (so reload_current_scene / change_scene_to_file in game
 # code work as usual). When the scene is current the bridge writes <session>/bridge.json
@@ -22,6 +25,8 @@
 # frame f but never by _process; flushing immediately, or also push_input, delivers it a frame
 # early or twice.)
 extends SceneTree
+
+const Observe = preload("observe.gd")
 
 var bridge: Node
 
@@ -65,6 +70,8 @@ class Bridge extends Node:
 	var schedule := {}              # absolute frame -> [input dicts]
 	var hashes := PackedStringArray()   # state hash per frame (index = frame)
 	var quitting := false
+	var observe: RefCounted
+	var headless := false
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
 		tree = t
@@ -72,13 +79,25 @@ class Bridge extends Node:
 		session_dir = a["session"]
 
 	func _ready() -> void:
+		headless = DisplayServer.get_name() == "headless"
+		var prof := {}
+		if args.has("profile"):
+			var pf := FileAccess.open(args["profile"], FileAccess.READ)
+			if pf == null:
+				_fatal("cannot read --profile=" + str(args["profile"]))
+				return
+			var parsed = JSON.parse_string(pf.get_as_text())
+			prof = parsed if parsed is Dictionary else {}
+		observe = Observe.new(tree, prof)
+		if not headless:
+			_detach_window_from_desktop_input()
 		if server.listen(0, "127.0.0.1") != OK:
 			_fatal("cannot listen on 127.0.0.1")
 			return
 		# token from the OS RNG: the global RNG must stay untouched for determinism
 		token = Crypto.new().generate_random_bytes(16).hex_encode()
 		seed(int(args.get("seed", "0")))
-		if DisplayServer.get_name() == "headless":
+		if headless:
 			# the headless root viewport is 64x64; give it the project's size so GUI layout and
 			# clicks match a rendered run
 			var w := int(ProjectSettings.get_setting("display/window/size/viewport_width", 1152))
@@ -133,6 +152,10 @@ class Bridge extends Node:
 					printerr("ghostlap play bridge: idle limit reached, quitting")
 					_quit()
 					return
+				if not headless:
+					# keep answering the compositor ("not responding" otherwise); desktop input
+					# can't reach the game (see _detach_window_from_desktop_input)
+					DisplayServer.process_events()
 				OS.delay_msec(2)
 				continue
 			idle_start = Time.get_ticks_msec()
@@ -163,7 +186,8 @@ class Bridge extends Node:
 			return
 		body["id"] = id
 		body["frame"] = frame
-		p.put_data((JSON.stringify(body) + "\n").to_utf8_buffer())
+		# keep insertion order: views put what matters (changed state, nearest objects) first
+		p.put_data((JSON.stringify(body, "", false) + "\n").to_utf8_buffer())
 
 	## Returns true when the game should run again (a step started, or quit).
 	func _handle(line: String) -> bool:
@@ -178,7 +202,16 @@ class Bridge extends Node:
 		var a: Dictionary = req.get("args", {})
 		match str(req.get("cmd", "")):
 			"look":
-				_reply(peer, id, {"ok": true, "result": _look()})
+				var res := _look()
+				var views: Array = a.get("views", []) if a.get("views") is Array else []
+				if views.is_empty():
+					views = observe.default_views()
+				res["views"] = observe.look(views, a)
+				if a.get("shot", false):
+					res["shot"] = _shot(int(a.get("shot_width", 960)))
+				_reply(peer, id, {"ok": true, "result": res})
+			"shot":
+				_reply(peer, id, {"ok": true, "result": _shot(int(a.get("width", 960)))})
 			"eval":
 				_reply(peer, id, _eval(str(a.get("expr", ""))))
 			"hashes":
@@ -327,6 +360,31 @@ class Bridge extends Node:
 			TYPE_OBJECT:
 				return str(v) if v != null else null
 		return var_to_str(v)
+
+	# ------------------------------------------------------------ screenshots / window
+
+	## Render the frozen frame (no game logic runs) and save it under <session>/shots/.
+	func _shot(width: int) -> Dictionary:
+		if headless:
+			return {"error": "headless: no renderer (start the session with a window or xvfb for screenshots)"}
+		RenderingServer.force_draw(false)
+		var img := tree.root.get_texture().get_image()
+		if img == null or img.is_empty():
+			return {"error": "viewport image is empty"}
+		if width > 0 and img.get_width() > width:
+			img.resize(width, maxi(1, roundi(img.get_height() * float(width) / img.get_width())), Image.INTERPOLATE_LANCZOS)
+		var dir := session_dir.path_join("shots")
+		DirAccess.make_dir_recursive_absolute(dir)
+		var path := dir.path_join("f%d.png" % frame)
+		if img.save_png(path) != OK:
+			return {"error": "cannot write " + path}
+		return {"path": path, "size": [img.get_width(), img.get_height()], "frame": frame}
+
+	## A visible window must not take real keyboard/mouse input: it would reach the game and break
+	## determinism. No focus = no keys; a mouse-passthrough region outside the window = no mouse.
+	func _detach_window_from_desktop_input() -> void:
+		DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
+		DisplayServer.window_set_mouse_passthrough(PackedVector2Array([Vector2(-2, -2), Vector2(-1, -2), Vector2(-1, -1)]))
 
 	# ------------------------------------------------------------ misc
 

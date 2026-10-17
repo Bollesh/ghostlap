@@ -1,0 +1,8 @@
+; Fixture for the `ui` view: a one-enemy card battle made of Controls (labels, a hand of card
+; buttons in an HBoxContainer, an End turn button). Playable from the UI text alone.
+config_version=5
+
+[application]
+
+config/name="cards"
+run/main_scene="res://main.tscn"
