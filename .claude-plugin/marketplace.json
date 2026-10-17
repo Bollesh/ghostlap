@@ -1,12 +1,14 @@
 {
-  "name": "gamefeel",
-  "description": "Game-feel tools for Godot",
-  "owner": { "name": "Bollesh" },
+  "name": "ghostlap",
+  "description": "Playtesting and game-feel tools for Godot",
+  "owner": {
+    "name": "Bollesh"
+  },
   "plugins": [
     {
-      "name": "gamefeel",
+      "name": "ghostlap",
       "source": "./plugin",
-      "description": "Measure and fix game feel in Godot 4 projects"
+      "description": "Playtest and measure game feel in Godot 4 projects"
     }
   ]
 }

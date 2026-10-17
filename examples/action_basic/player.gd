@@ -1,5 +1,5 @@
 extends CharacterBody2D
-## Platformer player. Every feel-relevant number is exported so gamefeel can point at it.
+## Platformer player. Every feel-relevant number is exported so ghostlap can point at it.
 
 @export var speed := 240.0
 @export var acceleration := 1400.0

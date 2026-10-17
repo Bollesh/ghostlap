@@ -1,10 +1,10 @@
 import os
 import time
 
-from gamefeel.graph.store import Graph
-from gamefeel.project import Project
-from gamefeel.scan.run import scan
-from gamefeel.scan.text import parse_project_text, parse_scene_text
+from ghostlap.graph.store import Graph
+from ghostlap.project import Project
+from ghostlap.scan.run import scan
+from ghostlap.scan.text import parse_project_text, parse_scene_text
 
 
 def test_scene_and_project_text(example):

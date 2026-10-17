@@ -1,7 +1,7 @@
 # Writing a genre pack
 
-A pack is a directory of YAML. Built-in packs live in `cli/src/gamefeel/packs/`; your own can
-live in `<project>/.gamefeel/packs/` or any directory listed in `GAMEFEEL_PACKS` (a later pack
+A pack is a directory of YAML. Built-in packs live in `cli/src/ghostlap/packs/`; your own can
+live in `<project>/.ghostlap/packs/` or any directory listed in `GHOSTLAP_PACKS` (a later pack
 with the same name overrides a built-in one).
 
 ```
@@ -48,18 +48,18 @@ feel:                         # words used in reports, by metric and direction
 | `orthographic_camera`, `y_sort`, `planar_movement_3d` | — | see `detect/signals.py` |
 
 A pack's score is the matched positive weight minus matched negative weight, divided by the
-total positive weight. `gamefeel detect` drafts the profile with every pack scoring ≥ 0.6.
+total positive weight. `ghostlap detect` drafts the profile with every pack scoring ≥ 0.6.
 
 ## Probes
 
-See the probe schema at the top of `cli/src/gamefeel/probes/schema.py`, and the built-in
+See the probe schema at the top of `cli/src/ghostlap/probes/schema.py`, and the built-in
 packs for examples. Rules of thumb:
 
 - Use roles (`left/right/up/down/jump/dash/attack`) and pack vars (`{move}`), not literal action
   names, so the probe works across games.
 - Prefer generated arenas; they make results independent of level design.
-- Every probe must `measure` existing metrics (`gamefeel metrics`). New metrics are Python
-  functions registered with `@metric` in `cli/src/gamefeel/metrics/`.
+- Every probe must `measure` existing metrics (`ghostlap feel metrics`). New metrics are Python
+  functions registered with `@metric` in `cli/src/ghostlap/metrics/`.
 - Use a sweep with a control run when you're measuring a window (see `coyote.yaml`).
 
 ## Profiles (reference ranges)

@@ -1,4 +1,4 @@
-from gamefeel.feedback import interpret, tighten
+from ghostlap.feedback import interpret, tighten
 
 
 def test_interpret_common_complaints():

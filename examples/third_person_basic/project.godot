@@ -1,11 +1,11 @@
 ; Engine configuration file.
-; gamefeel example: a 3D character with a laggy camera and slow turning.
+; ghostlap example: a 3D character with a laggy camera and slow turning.
 
 config_version=5
 
 [application]
 
-config/name="gamefeel example: third person 3D"
+config/name="ghostlap example: third person 3D"
 run/main_scene="res://level.tscn"
 config/features=PackedStringArray("4.3")
 

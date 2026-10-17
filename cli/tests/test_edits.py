@@ -1,4 +1,4 @@
-from gamefeel.edits import Edit, apply_edit, format_value, read_value
+from ghostlap.edits import Edit, apply_edit, format_value, read_value
 
 
 def _proj(tmp_path):

@@ -1,13 +1,13 @@
 """End-to-end: scan (engine) -> detect -> confirm -> probes -> analyze, on every example."""
 import pytest
 
-from gamefeel.analyze import analyze
-from gamefeel.detect.detect import detect, draft_profile
-from gamefeel.graph.store import Graph
-from gamefeel.packs.loader import load_packs
-from gamefeel.probes import run as prun
-from gamefeel.project import Project
-from gamefeel.scan.run import scan
+from ghostlap.analyze import analyze
+from ghostlap.detect.detect import detect, draft_profile
+from ghostlap.graph.store import Graph
+from ghostlap.packs.loader import load_packs
+from ghostlap.probes import run as prun
+from ghostlap.project import Project
+from ghostlap.scan.run import scan
 
 pytestmark = pytest.mark.godot
 
@@ -65,8 +65,8 @@ def _setup(root):
 def test_propose_is_verified_and_apply_writes_it(example):
     """propose fixes the floaty platformer in a scratch copy (real project untouched), without
     regressions or jump-height drift; apply then writes exactly those values."""
-    from gamefeel import propose as prop
-    from gamefeel.edits import Edit, read_value
+    from ghostlap import propose as prop
+    from ghostlap.edits import Edit, read_value
 
     root = example("platformer_floaty")
     original = (root / "player.gd").read_text()
@@ -88,7 +88,7 @@ def test_propose_is_verified_and_apply_writes_it(example):
 
 def test_default_scope_keeps_motion_character(example):
     """By default only forgiveness/feedback is fixed: the floaty game's motion stays floaty."""
-    from gamefeel import propose as prop
+    from ghostlap import propose as prop
 
     root = example("platformer_floaty")
     p, prof = _setup(root)
@@ -103,7 +103,7 @@ def test_default_scope_keeps_motion_character(example):
 
 
 def test_apply_refuses_stale_files(example):
-    from gamefeel import propose as prop
+    from ghostlap import propose as prop
 
     root = example("platformer_floaty")
     p, prof = _setup(root)
@@ -115,9 +115,9 @@ def test_apply_refuses_stale_files(example):
 
 
 def test_feedback_steers_the_next_proposal(example):
-    from gamefeel import propose as prop
-    from gamefeel.detect.detect import read_profile
-    from gamefeel.feedback import feedback
+    from ghostlap import propose as prop
+    from ghostlap.detect.detect import read_profile
+    from ghostlap.feedback import feedback
 
     root = example("platformer_floaty")
     p, prof = _setup(root)
@@ -136,8 +136,8 @@ def test_feedback_steers_the_next_proposal(example):
 def test_clip_renders_now_vs_proposal(example):
     from pathlib import Path
 
-    from gamefeel import propose as prop
-    from gamefeel.clip import clip
+    from ghostlap import propose as prop
+    from ghostlap.clip import clip
 
     root = example("platformer_floaty")
     p, prof = _setup(root)

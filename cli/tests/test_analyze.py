@@ -1,4 +1,4 @@
-from gamefeel.analyze import _group_root_causes, classify
+from ghostlap.analyze import _group_root_causes, classify
 
 
 def test_classify():

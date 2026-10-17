@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from gamefeel.metrics.base import ProbeData, Run
-from gamefeel.metrics.jump import coyote_frames, time_to_apex
-from gamefeel.metrics.movement import accel_time, decel_time
+from ghostlap.metrics.base import ProbeData, Run
+from ghostlap.metrics.jump import coyote_frames, time_to_apex
+from ghostlap.metrics.movement import accel_time, decel_time
 
 ROLES = {"right": "move_right", "left": "move_left", "jump": "jump"}
 

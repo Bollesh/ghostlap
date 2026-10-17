@@ -1,11 +1,11 @@
 ; Engine configuration file.
-; gamefeel example: a top-down game with slow starts, slippery stops, fast diagonals and a sluggish dash.
+; ghostlap example: a top-down game with slow starts, slippery stops, fast diagonals and a sluggish dash.
 
 config_version=5
 
 [application]
 
-config/name="gamefeel example: topdown sluggish"
+config/name="ghostlap example: topdown sluggish"
 run/main_scene="res://level.tscn"
 config/features=PackedStringArray("4.3")
 

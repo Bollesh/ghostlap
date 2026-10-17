@@ -1,4 +1,4 @@
-from gamefeel.scan.gdscript import parse_gdscript
+from ghostlap.scan.gdscript import parse_gdscript
 
 SRC = '''class_name Hero
 extends CharacterBody2D

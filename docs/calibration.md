@@ -7,12 +7,12 @@ game-feel guidance and sanity-checked against the bundled examples. Reports say 
 
 1. For each pack, pick ≥ 5 open-source Godot games that players widely consider to feel good
    in that genre. Check licences, and record the commit used.
-2. Run `gamefeel scan`, `detect`, confirm the profile by hand, and `gamefeel probe run` with
+2. Run `ghostlap scan`, `detect`, confirm the profile by hand, and `ghostlap feel probe run` with
    the pack's probes. Store every `report.json`.
 3. For each metric: `good` = the range covered by the middle ~80% of reference games, widened
    to the nearest round number; `warn` = the full observed range plus a margin.
 4. Publish the table (game, commit, metric values) here, set `calibrated: true`, and note the
-   gamefeel version used.
+   ghostlap version used.
 5. Styles (`precise`, `floaty`, …) get their own reference sets.
 
 ## Sanity checks so far

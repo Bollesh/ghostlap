@@ -1,11 +1,11 @@
 ; Engine configuration file.
-; gamefeel example: a platformer that deliberately feels floaty and slippery.
+; ghostlap example: a platformer that deliberately feels floaty and slippery.
 
 config_version=5
 
 [application]
 
-config/name="gamefeel example: platformer (floaty)"
+config/name="ghostlap example: platformer (floaty)"
 run/main_scene="res://level.tscn"
 config/features=PackedStringArray("4.3")
 

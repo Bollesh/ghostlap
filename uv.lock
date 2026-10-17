@@ -24,8 +24,8 @@ wheels = [
 ]
 
 [[package]]
-name = "gamefeel"
-version = "0.1.0"
+name = "ghostlap"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },

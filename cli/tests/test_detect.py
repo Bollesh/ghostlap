@@ -1,10 +1,10 @@
 import pytest
 
-from gamefeel.detect.detect import detect, draft_profile
-from gamefeel.graph.store import Graph
-from gamefeel.packs.loader import load_packs
-from gamefeel.project import Project
-from gamefeel.scan.run import scan
+from ghostlap.detect.detect import detect, draft_profile
+from ghostlap.graph.store import Graph
+from ghostlap.packs.loader import load_packs
+from ghostlap.project import Project
+from ghostlap.scan.run import scan
 
 CASES = [
     ("platformer_floaty", ["platformer"], "2d", {"left": "move_left", "right": "move_right", "jump": "jump"}),

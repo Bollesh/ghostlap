@@ -7,6 +7,6 @@ build/
 *.egg-info/
 .pytest_cache/
 
-# Godot / gamefeel working files (examples)
+# Godot / ghostlap working files (examples)
 .godot/
-.gamefeel/
+.ghostlap/

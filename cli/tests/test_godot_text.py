@@ -1,4 +1,4 @@
-from gamefeel.scan.godot_text import parse_godot_text, parse_variant
+from ghostlap.scan.godot_text import parse_godot_text, parse_variant
 
 
 def test_scalars_and_containers():

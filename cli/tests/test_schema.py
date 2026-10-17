@@ -1,6 +1,6 @@
-from gamefeel.metrics import REGISTRY
-from gamefeel.probes.run import substitute_vars
-from gamefeel.probes.schema import compile_probe, requirements_met, validate
+from ghostlap.metrics import REGISTRY
+from ghostlap.probes.run import substitute_vars
+from ghostlap.probes.schema import compile_probe, requirements_met, validate
 
 ROLES = {"left": "move_left", "right": "move_right", "jump": "jump"}
 ACTIONS = {"move_left", "move_right", "jump", "ui_accept"}

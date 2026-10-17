@@ -1,13 +1,23 @@
-# gamefeel
+# Ghostlap
 
-**A linter for game feel in Godot 4.** gamefeel reads an unfamiliar Godot project, works out
-what kind of game it is, runs scripted micro-tests headless, and tells you, and your AI agent,
-*how it feels* in numbers, with concrete fixes it verifies before you apply them:
+**Claude playtests your Godot game, proves what works, and leaves a ghost: a replay test that
+keeps proving it.**
 
-![Same inputs: the floaty example platformer now, and with gamefeel's proposal](docs/media/examples/platformer_floaty.gif)
+> **Status: in development.** The playtester (`ghostlap play`: Claude drives your real levels
+> frame by frame, rules pass / fail / blocked with evidence, and saves the run as a CI test) is
+> being built on the `phase-1` branch. What ships today is the **game-feel toolkit**,
+> `ghostlap feel`, described below.
 
-*The floaty example platformer replaying identical inputs: as it is ("now") and with gamefeel's
-verified proposal. Its floaty movement is kept; gamefeel adds coyote time, a jump buffer,
+## Game feel toolkit (`ghostlap feel`)
+
+ghostlap reads an unfamiliar Godot project, works out what kind of game it is, runs scripted
+micro-tests headless, and tells you, and your AI agent, *how it feels* in numbers, with
+concrete fixes it verifies before you apply them:
+
+![Same inputs: the floaty example platformer now, and with ghostlap's proposal](docs/media/examples/platformer_floaty.gif)
+
+*The floaty example platformer replaying identical inputs: as it is ("now") and with ghostlap's
+verified proposal. Its floaty movement is kept; ghostlap adds coyote time, a jump buffer,
 short hops on tapped jumps and hitstop. More examples [below](#examples).*
 
 ```
@@ -27,58 +37,58 @@ fine by hand.
 
 ## What it does
 
-1. **Understands the project.** `gamefeel scan` builds a graph of scenes, scripts, signals,
-   exported properties and input actions in `.gamefeel/graph.db` (SQLite). It uses Godot itself
+1. **Understands the project.** `ghostlap scan` builds a graph of scenes, scripts, signals,
+   exported properties and input actions in `.ghostlap/graph.db` (SQLite). It uses Godot itself
    as the parser (headless, reading scenes without running them), with a text fallback for
    projects that don't load. Rescans are incremental.
-2. **Detects what the game is.** `gamefeel detect` finds the player, maps input actions to
+2. **Detects what the game is.** `ghostlap detect` finds the player, maps input actions to
    roles, scores genre packs with evidence (`applies gravity: velocity.y += g * delta
    (res://player.gd:27)`), and lists mechanics, levels and hazards. You confirm or correct it.
-3. **Measures feel.** `gamefeel check` builds small test arenas (or uses your levels), drives
+3. **Measures feel.** `ghostlap feel check` builds small test arenas (or uses your levels), drives
    the player with frame-exact inputs at a fixed frame rate, records every physics frame, and
    computes metrics: jump arc, coyote time, input buffering, acceleration, stopping, turning,
-   dash, attack startup, hitstop, knockback, camera follow and more (`gamefeel metrics`).
+   dash, attack startup, hitstop, knockback, camera follow and more (`ghostlap feel metrics`).
 4. **Suggests fixes.** Findings point at the exact property (file:line, current → proposed),
    using simple physics models where they exist (a jump keeps its height while its timing
    changes). Findings that share a cause are grouped and get one shared value.
-5. **Verifies them instead of trusting them.** `gamefeel propose` applies the suggestions to a
+5. **Verifies them instead of trusting them.** `ghostlap feel propose` applies the suggestions to a
    scratch copy, re-measures, and repeats until clean. Each value moves at most 2× per pass and
    coupled values move together. You get the measured before → after, regressions and prediction
-   errors; your project is untouched until `gamefeel apply`.
-6. **Shows you.** `gamefeel clip` renders "now" vs "proposed" with identical inputs as a GIF/MP4
+   errors; your project is untouched until `ghostlap feel apply`.
+6. **Shows you.** `ghostlap feel clip` renders "now" vs "proposed" with identical inputs as a GIF/MP4
    (plus a contact sheet an agent can read). A clean report isn't proof that it feels right;
    watching is.
-7. **Listens.** `gamefeel feedback "falls too fast"` turns your words into this project's ranges,
+7. **Listens.** `ghostlap feel feedback "falls too fast"` turns your words into this project's ranges,
    so the next proposal moves toward what you want.
 
 **Forgiveness first, motion is your call.** Coyote time, jump buffering, variable jump height,
 hitstop, invulnerability, hit feedback, input latency and diagonal speed help almost every game,
-so gamefeel fixes those. *How the character moves* (acceleration, stopping, jump timing, fall
+so ghostlap fixes those. *How the character moves* (acceleration, stopping, jump timing, fall
 speed) is style: floaty, momentum-heavy movement is a valid choice and often reads as more
-game-like than snappy movement. gamefeel describes it but only changes it if you ask
-(`tune: all` in `profile.yaml`, or `gamefeel propose --scope all`).
+game-like than snappy movement. ghostlap describes it but only changes it if you ask
+(`tune: all` in `profile.yaml`, or `ghostlap feel propose --scope all`).
 
 ## Quick start
 
-Requirements: Python 3.10+, Godot 4.3+ (`godot` on PATH, or `GAMEFEEL_GODOT=/path/to/godot`).
+Requirements: Python 3.10+, Godot 4.3+ (`godot` on PATH, or `GHOSTLAP_GODOT=/path/to/godot`).
 
 ```bash
 # not on PyPI yet: install from a checkout
-git clone https://github.com/Bollesh/gamefeel && uv tool install ./gamefeel   # or: pip install ./gamefeel
+git clone https://github.com/Bollesh/ghostlap && uv tool install ./ghostlap   # or: pip install ./ghostlap
 
 cd your-godot-project
-gamefeel scan          # build the graph (first run imports the project)
-gamefeel detect        # what is this game? writes a draft .gamefeel/profile.yaml
-#   review/edit .gamefeel/profile.yaml, then:
-gamefeel confirm
-gamefeel check         # run probes + analyze -> .gamefeel/report.md
-gamefeel propose       # verify the fixes in a scratch copy -> .gamefeel/proposals/<stamp>/proposal.md
-gamefeel clip          # watch now vs proposed side by side (needs ffmpeg and a display, or xvfb-run)
-gamefeel feedback "the jump feels floaty"   # if something still feels off; then propose + clip again
-gamefeel apply         # write the proposal's changes to your project
+ghostlap scan          # build the graph (first run imports the project)
+ghostlap detect        # what is this game? writes a draft .ghostlap/profile.yaml
+#   review/edit .ghostlap/profile.yaml, then:
+ghostlap confirm
+ghostlap feel check         # run probes + analyze -> .ghostlap/report.md
+ghostlap feel propose       # verify the fixes in a scratch copy -> .ghostlap/proposals/<stamp>/proposal.md
+ghostlap feel clip          # watch now vs proposed side by side (needs ffmpeg and a display, or xvfb-run)
+ghostlap feel feedback "the jump feels floaty"   # if something still feels off; then propose + clip again
+ghostlap feel apply         # write the proposal's changes to your project
 ```
 
-gamefeel only writes to `.gamefeel/` (plus Godot's own `.godot/` import cache). It runs its
+ghostlap only writes to `.ghostlap/` (plus Godot's own `.godot/` import cache). It runs its
 GDScript from outside your project, so nothing needs installing into `addons/`.
 
 ## With Claude Code
@@ -86,20 +96,20 @@ GDScript from outside your project, so nothing needs installing into `addons/`.
 This repo is also a Claude Code plugin marketplace. Install the skill in one step:
 
 ```
-/plugin install gamefeel --marketplace Bollesh/gamefeel
+/plugin install ghostlap --marketplace Bollesh/ghostlap
 ```
 
 or, on older Claude Code versions:
 
 ```
-/plugin marketplace add Bollesh/gamefeel
-/plugin install gamefeel@gamefeel
+/plugin marketplace add Bollesh/ghostlap
+/plugin install ghostlap@ghostlap
 ```
 
 (The plugin itself lives in `plugin/`, so installs only fetch the skill. The same commands work
 from your shell as `claude plugin ...`. Updates arrive through
-`/plugin`; pin a release with `Bollesh/gamefeel#v0.1.0`.) The plugin ships the skill only;
-install the `gamefeel` CLI as shown above.
+`/plugin`; pin a release with `Bollesh/ghostlap#v0.1.0`.) The plugin ships the skill only;
+install the `ghostlap` CLI as shown above.
 
 Then ask something like *"why does my jump feel floaty?"* or *"check the game feel"*. The skill
 scans, confirms the genre and player with you, asks what to test, writes game-specific probes
@@ -120,7 +130,7 @@ v1.x. Packs are plain YAML, so you can write your own: see [docs/packs.md](docs/
 
 ## Examples
 
-Each example replays identical inputs. Left is the game as it is; right is gamefeel's verified
+Each example replays identical inputs. Left is the game as it is; right is ghostlap's verified
 proposal (forgiveness and feedback only; motion untouched).
 
 | | |
@@ -138,7 +148,7 @@ camera that follows sideways at a fixed height so jump arcs stay readable.
 ## Writing a probe
 
 ```yaml
-# .gamefeel/probes/dash_into_wall.yaml
+# .ghostlap/probes/dash_into_wall.yaml
 probe: dash_into_wall
 requires: {actions: [right, dash]}
 arena: wall                 # or: scene: {path: res://levels/l2.tscn, spawn: SpawnPoints/A}
@@ -150,7 +160,7 @@ measure: [dash.distance, impact.knockback]
 assert: {dash.distance: {max: 6}}
 ```
 
-`gamefeel probe validate <file>` checks it; `gamefeel check` picks it up automatically.
+`ghostlap feel probe validate <file>` checks it; `ghostlap feel check` picks it up automatically.
 
 ## Commands
 
@@ -160,24 +170,24 @@ assert: {dash.distance: {max: 6}}
 | `detect [--write-profile]` | detect player, actions, genres, mechanics |
 | `confirm` | mark the profile confirmed |
 | `graph profile` / `graph query NAME …` / `graph sql "…"` | query the graph (`who-reads`, `exports-of`, `script-of`, `instanced-by`, `scenes-with`, `node`, `path`, `search`) |
-| `probe list` / `probe validate FILE…` / `probe run [--only …]` | probes |
-| `analyze [--run DIR]` / `check` | report / run + report |
-| `propose [--scope forgiveness\|all] [--passes N] [--cap X]` | verify fixes in a scratch copy, until clean |
-| `clip [--against proposal\|NAME] [--alone] [--save-as NAME] [--probes …]` | render side-by-side GIF/MP4 + contact sheet |
-| `feedback "words"` / `feedback --metric M --direction high\|low` | record how it feels; tightens this project's ranges |
-| `apply [--proposal STAMP] [--only PROP…]` | write a verified proposal to the project |
-| `metrics`, `packs`, `pattern NAME`, `doctor`, `init` | reference & environment |
+| `feel probe list` / `feel probe validate FILE…` / `feel probe run [--only …]` | probes |
+| `feel analyze [--run DIR]` / `feel check` | report / run + report |
+| `feel propose [--scope forgiveness\|all] [--passes N] [--cap X]` | verify fixes in a scratch copy, until clean |
+| `feel clip [--against proposal\|NAME] [--alone] [--save-as NAME] [--probes …]` | render side-by-side GIF/MP4 + contact sheet |
+| `feel feedback "words"` / `feel feedback --metric M --direction high\|low` | record how it feels; tightens this project's ranges |
+| `feel apply [--proposal STAMP] [--only PROP…]` | write a verified proposal to the project |
+| `feel metrics`, `feel packs`, `feel pattern NAME`, `doctor`, `init` | reference & environment |
 
 Every command accepts `--project DIR` and `--json`.
 
 ## How it works
 
-- `addons/gamefeel/scan/scan.gd`: headless extractor (SceneState, script reflection,
+- `addons/ghostlap/scan/scan.gd`: headless extractor (SceneState, script reflection,
   InputMap, ProjectSettings).
-- `addons/gamefeel/probe/`: probe runner, test arenas and per-frame sampler. Inputs are
+- `addons/ghostlap/probe/`: probe runner, test arenas and per-frame sampler. Inputs are
   applied at the end of the previous physics tick, so `is_action_just_pressed()` is true on
   exactly the scheduled frame.
-- `cli/src/gamefeel/`: graph store, incremental change detection (mtime → hash → uid
+- `cli/src/ghostlap/`: graph store, incremental change detection (mtime → hash → uid
   renames), detection, probe compiler, metrics, analysis and suggestions.
 
 ## Known limits (v1)
@@ -194,13 +204,13 @@ Every command accepts `--project DIR` and `--json`.
 
 ## Development
 
-When releasing, bump the version in `pyproject.toml`, `cli/src/gamefeel/__init__.py`,
-`plugin/.claude-plugin/plugin.json` and `addons/gamefeel/plugin.cfg` together; a test fails if they differ.
+When releasing, bump the version in `pyproject.toml`, `cli/src/ghostlap/__init__.py`,
+`plugin/.claude-plugin/plugin.json` and `addons/ghostlap/plugin.cfg` together; a test fails if they differ.
 
 ```bash
 uv sync
 uv run pytest            # end-to-end tests run when Godot is available
-uv run gamefeel --help
+uv run ghostlap --help
 ```
 
 The `examples/` folder has one deliberately-off and one tuned project per pack. The test
