@@ -25,4 +25,7 @@ def bridge_profile(project: Project, profile: dict | None) -> dict:
         # profiles written before `views` existed: spatial games get the spatial set
         "views": profile.get("views") or (SPATIAL_VIEWS if profile.get("genres") and player.get("scene") else DEFAULT_VIEWS),
         "state_nodes": profile.get("state_nodes") or [],
+        # incidents: side views leave the top of the level open; movement roles drive `stuck`
+        "genres": list(profile.get("genres") or []),
+        "actions": dict(profile.get("actions") or {}),
     }

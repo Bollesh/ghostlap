@@ -4,7 +4,7 @@ State lives in .ghostlap/play/<id>/ so every `ghostlap play …` call is a fresh
 
     session.json   goal, start, mode, budget and its use, held inputs, verdict
     inputs.jsonl   the input line: {"f": frame the game first sees it, "action"|"key"|"mouse": …, "pressed": …}
-    events.jsonl   notes, eval writes, refusals, the end
+    events.jsonl   notes, incidents, eval writes, refusals, the end
     last_look.json views last shown, so `step` can collapse what didn't change
     bridge.json    port/token/pid of the running Godot (written by bridge.gd)
 
@@ -22,7 +22,7 @@ from pathlib import Path
 import yaml
 
 from ..project import GhostlapError, Project
-from .bridge_client import Bridge, BridgeError
+from .bridge_client import Bridge, BridgeError, BridgeHang
 
 DEFAULT_BUDGET = {"frames": 36000, "commands": 120, "shots": 15}
 # commands that never count against the budget (they're how a session ends or recovers)
@@ -56,6 +56,17 @@ def main_scene(project: Project) -> str:
     if not m:
         raise GhostlapError("project.godot has no run/main_scene; give the goal a start: {scene: res://…}")
     return m.group(1)
+
+
+def log_summary(log: Path, n: int = 15) -> str:
+    """The end of godot.log as evidence: errors, the crash signal and the GDScript backtrace,
+    without the C++ frames and banners that push them out of a plain tail."""
+    try:
+        lines = log.read_text(errors="replace").splitlines()[-200:]
+    except OSError:
+        return "(no log)"
+    noise = re.compile(r"^\[\d+\] |^=+$|^-- END OF|^Dumping the backtrace|^Load address|^Engine version|^\s*$")
+    return "\n".join([ln for ln in lines if not noise.search(ln)][-n:])
 
 
 # ------------------------------------------------------------------ inputs
@@ -161,6 +172,10 @@ class Session:
                 raise GhostlapError(f"the goal's success expression doesn't compile: {e}") from e
             if cfg.get("goal_error"):
                 s.log("goal_error", error=cfg["goal_error"])
+        # errors while the scene loaded (frame 0)
+        s.meta["load_incidents"] = bridge.request("incidents")["result"]
+        for inc in s.meta["load_incidents"]:
+            s.incident(inc)
         s.save()
         return s, s.look_raw()
 
@@ -198,11 +213,21 @@ class Session:
             idle = False
         self.meta["status"] = "abandoned" if idle else "crashed"
         self.log(self.meta["status"], error=error)
+        if not idle:
+            self.incident({"f": self.meta.get("frame", 0), "type": "crash", "class": "bug",
+                           "why": "the Godot process died", "log_tail": log_summary(self.dir / "godot.log")})
         self.save()
         if idle:
             return (f"the session sat idle for 30 minutes and its game closed; end it with "
                     f"`ghostlap play end --verdict blocked --why abandoned`, then start a new one")
-        return f"Godot is gone (crash?): {error}\nlog: {self.dir / 'godot.log'}"
+        return (f"CRASH: Godot is gone: {error}\n{log_summary(self.dir / 'godot.log', 8)}\n"
+                f"log: {self.dir / 'godot.log'} — end the session with `ghostlap play end --verdict fail --why …`")
+
+    def incident(self, inc: dict) -> None:
+        counts = self.meta.setdefault("incidents", {})
+        counts[inc["type"]] = counts.get(inc["type"], 0) + 1
+        with open(self.dir / "events.jsonl", "a") as f:
+            f.write(json.dumps({"f": inc["f"], "kind": "incident", **{k: v for k, v in inc.items() if k != "f"}}) + "\n")
 
     def log(self, kind: str, **data) -> None:
         with open(self.dir / "events.jsonl", "a") as f:
@@ -311,13 +336,17 @@ class Session:
         start = self.meta["frame"]
         b = self.bridge
         try:
-            if cmd == "until":
-                res = b.request("until", timeout=max(10.0, frames / 60.0 * 20), expr=expr, max=frames,
-                                inputs=inputs)["result"]
-            else:
-                res = b.step(frames, inputs)
+            res = b.until(expr, frames, inputs) if cmd == "until" else b.step(frames, inputs)
+        except BridgeHang as e:
+            b.kill()
+            self.meta["status"] = "hung"
+            self.incident({"f": e.frame if e.frame is not None else start, "type": "hang", "class": "bug", "why": str(e),
+                           "log_tail": log_summary(self.dir / "godot.log")})
+            self.save()
+            raise GhostlapError(f"HANG during {cmd} from frame {start}: {e}. Godot was killed; the session is over "
+                                f"(`ghostlap play end --verdict fail --why …`). log: {self.dir / 'godot.log'}") from e
         except BridgeError as e:
-            if not b.alive():
+            if b.exited():
                 raise GhostlapError(f"during {cmd} from frame {start}: " + self.mark_dead(str(e))) from e
             raise
         ran = res["f"] - start
@@ -330,5 +359,7 @@ class Session:
         # pressed but not yet released: the release lands on the next command's first frame
         self.meta["pending"] = [{"kind": t["kind"], "what": t["what"]} for t in taps if t["at"] <= ran < t["up"]]
         self.meta["used"]["frames"] += ran
+        for inc in res.get("incidents") or []:
+            self.incident(inc)
         self._sync(res)
         return res

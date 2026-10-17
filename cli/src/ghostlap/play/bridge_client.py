@@ -27,6 +27,22 @@ class BridgeError(GhostlapError):
     pass
 
 
+class BridgeHang(BridgeError):
+    """A step made no progress for HANG_SECONDS: game code is stuck (an infinite loop?)."""
+
+    def __init__(self, msg: str, frame: int | None):
+        super().__init__(msg)
+        self.frame = frame
+
+
+# A stepping bridge writes its frame to <session>/progress every 250 ms. No change for HANG_SECONDS while
+# Godot burns CPU is a hang (an infinite loop). In a rendered mode an idle Godot is usually waiting
+# for the compositor (a hidden window or a locked screen renders slowly), so that only counts as a
+# hang after IDLE_HANG_SECONDS.
+HANG_SECONDS = float(os.environ.get("GHOSTLAP_HANG_SECONDS", "10"))
+IDLE_HANG_SECONDS = float(os.environ.get("GHOSTLAP_IDLE_HANG_SECONDS", "120"))
+
+
 @dataclass
 class Bridge:
     session_dir: Path
@@ -102,6 +118,16 @@ class Bridge:
         except (OSError, IndexError):
             return True
 
+    def exited(self, within: float = 3.0) -> bool:
+        """True if the process is gone or goes within `within` s (a crashing Godot closes its socket
+        first, then spends a moment writing its backtrace)."""
+        deadline = time.monotonic() + within
+        while self.alive():
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
     def quit(self, timeout: float = 10.0) -> None:
         try:
             self.request("quit", timeout=timeout)
@@ -121,15 +147,40 @@ class Bridge:
 
     # ---------------------------------------------------------------- requests
 
-    def request(self, cmd: str, timeout: float | None = 30.0, **args) -> dict:
+    def request(self, cmd: str, timeout: float | None = 30.0, watch_progress: bool = False, **args) -> dict:
+        """watch_progress (step/until): no overall timeout; instead a hang is HANG_SECONDS without
+        the bridge's progress file changing."""
         req = {"id": next(_ids), "token": self.token, "cmd": cmd, "args": args}
+        progress = self.session_dir / "progress"
         try:
             with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
-                s.settimeout(timeout)
+                s.settimeout(1.0 if watch_progress else timeout)
                 s.sendall((json.dumps(req) + "\n").encode())
                 buf = b""
+                last, last_change, cpu0 = _read(progress), time.monotonic(), _cpu_seconds(self.pid)
                 while b"\n" not in buf:
-                    chunk = s.recv(65536)
+                    try:
+                        chunk = s.recv(65536)
+                    except socket.timeout:
+                        if not watch_progress:
+                            raise
+                        now = _read(progress)
+                        stalled = time.monotonic() - last_change
+                        if now != last:
+                            last, last_change, cpu0 = now, time.monotonic(), _cpu_seconds(self.pid)
+                        elif stalled > HANG_SECONDS:
+                            cpu = _cpu_seconds(self.pid)
+                            # unknown CPU (no /proc) or headless: no progress is a hang
+                            busy = cpu is None or cpu0 is None or (cpu - cpu0) > 0.5 * stalled \
+                                or bool(self.info.get("headless"))
+                            if busy or stalled > IDLE_HANG_SECONDS:
+                                raise BridgeHang(f"{cmd!r} made no progress for {stalled:.0f}s "
+                                                 f"(last progress at frame {last or '?'}"
+                                                 + (", Godot busy" if busy else ", Godot idle: is the window hidden?")
+                                                 + ")", int(last) if last.isdigit() else None) from None
+                        if not self.alive():
+                            raise BridgeError(f"Godot exited during {cmd!r} (crash?)") from None
+                        continue
                     if not chunk:
                         raise BridgeError(f"bridge closed the connection during {cmd!r}"
                                           + ("" if self.alive() else " (Godot exited: crash?)"))
@@ -152,15 +203,35 @@ class Bridge:
         return self.request("shot", width=width)["result"]
 
     def step(self, frames: int, inputs: list[dict] | None = None, timeout: float | None = None) -> dict:
-        # generous default: headless games run far faster than real time
-        t = timeout if timeout is not None else max(10.0, frames / 60.0 * 20)
-        return self.request("step", timeout=t, frames=frames, inputs=inputs or [])["result"]
+        """Without a timeout, waits as long as frames keep advancing (see BridgeHang)."""
+        if timeout is not None:
+            return self.request("step", timeout=timeout, frames=frames, inputs=inputs or [])["result"]
+        return self.request("step", watch_progress=True, frames=frames, inputs=inputs or [])["result"]
+
+    def until(self, expr: str, max_frames: int, inputs: list[dict] | None = None) -> dict:
+        return self.request("until", watch_progress=True, expr=expr, max=max_frames, inputs=inputs or [])["result"]
 
     def eval(self, expr: str):
         return self.request("eval", expr=expr)["result"]
 
     def hashes(self, start: int = 0) -> list[str]:
         return self.request("hashes", **{"from": start})["result"]
+
+
+def _cpu_seconds(pid: int) -> float | None:
+    """User+system CPU time of a process (Linux /proc), or None."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _read(p: Path) -> str:
+    try:
+        return p.read_text()
+    except OSError:
+        return ""
 
 
 def _bridge_broken(log: Path) -> bool:

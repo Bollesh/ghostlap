@@ -27,6 +27,7 @@
 extends SceneTree
 
 const Observe = preload("observe.gd")
+const Incidents = preload("incidents.gd")
 
 var bridge: Node
 
@@ -52,6 +53,10 @@ func _init() -> void:
 
 class Bridge extends Node:
 	const IDLE_LIMIT_MS := 30 * 60 * 1000
+	## While stepping, <session>/progress gets the frame at most this often: the CLI calls a step
+	## hung when it stops changing (a `while true` in game code never returns to us). Time-based,
+	## so a slow game (2 fps) still shows progress.
+	const PROGRESS_MS := 250
 	const _SNAP2 := Vector2(0.001, 0.001)
 	const _SNAP3 := Vector3(0.001, 0.001, 0.001)
 
@@ -78,6 +83,9 @@ class Bridge extends Node:
 	var goal_error := ""                # the last check's error ("" when it evaluated fine)
 	var until_expr: Expression = null   # set while an `until` runs
 	var until_result := {}
+	var incidents: RefCounted
+	var cmd_incidents: Array = []       # incidents during the running step/until
+	var _progress_ms := 0
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
 		tree = t
@@ -96,6 +104,7 @@ class Bridge extends Node:
 			prof = parsed if parsed is Dictionary else {}
 		observe = Observe.new(tree, prof)
 		ctx = ExprContext.new(tree, observe)
+		incidents = Incidents.new(tree, observe, prof, session_dir.path_join("godot.log"))
 		if not headless:
 			_detach_window_from_desktop_input()
 		if server.listen(0, "127.0.0.1") != OK:
@@ -134,14 +143,19 @@ class Bridge extends Node:
 		else:
 			frame += 1
 		hashes.append(_hash())
+		_check_incidents()
 		_check_goal()
 		if frames_left > 0:
 			frames_left -= 1
+			if Time.get_ticks_msec() - _progress_ms >= PROGRESS_MS:
+				_write_progress()
 			if until_expr != null:
 				_check_until()
 		if frames_left == 0:
 			if pending_peer != null:
 				var res := _look()
+				res["incidents"] = cmd_incidents
+				cmd_incidents = []
 				if until_expr != null:
 					if until_result.is_empty():
 						until_result = {"met": false, "reason": "max"}
@@ -236,6 +250,8 @@ class Bridge extends Node:
 				_reply(peer, id, _eval(str(a.get("expr", "")), bool(a.get("write", false))))
 			"config":
 				_reply(peer, id, _config(a))
+			"incidents":
+				_reply(peer, id, {"ok": true, "result": incidents.all})
 			"hashes":
 				var lo := int(a.get("from", 0))
 				_reply(peer, id, {"ok": true, "result": Array(hashes.slice(lo))})
@@ -281,6 +297,8 @@ class Bridge extends Node:
 
 	func _quit() -> void:
 		quitting = true
+		if incidents != null:
+			incidents.close()
 		tree.quit()
 
 	# ------------------------------------------------------------ inputs
@@ -373,6 +391,8 @@ class Bridge extends Node:
 			"hash": hashes[frame] if frame >= 0 and frame < hashes.size() else "",
 			"goal_met_at": goal_met_at,
 			"goal_error": goal_error,
+			"incidents": incidents.all.size() if incidents != null else 0,
+			"suppressed_errors": incidents.suppressed_errors if incidents != null else 0,
 		}
 
 	## Positions and velocities of every 2D/3D node in the current scene, rounded so float
@@ -398,7 +418,7 @@ class Bridge extends Node:
 
 	# ------------------------------------------------------------ expressions
 
-	const INPUT_NAMES := ["player", "scene", "tree", "Input", "InputMap", "Engine", "ProjectSettings", "DisplayServer"]
+	const INPUT_NAMES := ["player", "scene", "tree", "incident", "Input", "InputMap", "Engine", "ProjectSettings", "DisplayServer"]
 	## Calls that change the game, its input or its RNG. A name match, not a sandbox: it stops
 	## accidents, not intent (a game's own `take_damage()` still gets through).
 	static var _writes := RegEx.create_from_string(
@@ -418,7 +438,8 @@ class Bridge extends Node:
 		return e
 
 	func _run(e: Expression) -> Array:
-		var v = e.execute([observe.find_player(), tree.current_scene, tree, Input, InputMap, Engine, ProjectSettings, DisplayServer], ctx, false)
+		var last = incidents.all.back() if not incidents.all.is_empty() else null
+		var v = e.execute([observe.find_player(), tree.current_scene, tree, last, Input, InputMap, Engine, ProjectSettings, DisplayServer], ctx, false)
 		if e.has_execute_failed():
 			return [false, e.get_error_text()]
 		return [true, v]
@@ -460,6 +481,21 @@ class Bridge extends Node:
 		goal_error = "" if r[0] else str(r[1])
 		if r[0] and _truthy(r[1]):
 			goal_met_at = frame
+
+	## Every incident ends an `until` right away; a step runs its frames and reports them.
+	func _check_incidents() -> void:
+		var new: Array = incidents.tick(frame)
+		for inc in new:
+			if not headless:
+				var sh := _shot(960)
+				if sh.has("path"):
+					inc["shot"] = sh["path"]
+			# frame 0 (load errors): `start` reports them via the `incidents` command
+			if frame > 0:
+				cmd_incidents.append(inc)
+		if not new.is_empty() and until_expr != null and frames_left > 0:
+			until_result = {"met": false, "reason": "incident", "incident": new[0]["type"]}
+			frames_left = 1   # the decrement below makes it 0: reply on this frame
 
 	func _check_until() -> void:
 		if tree.current_scene == null:
@@ -527,6 +563,13 @@ class Bridge extends Node:
 
 	# ------------------------------------------------------------ misc
 
+	func _write_progress() -> void:
+		var f := FileAccess.open(session_dir.path_join("progress"), FileAccess.WRITE)
+		if f != null:
+			f.store_string(str(frame))
+			f.close()
+		_progress_ms = Time.get_ticks_msec()
+
 	func _write_bridge_json() -> void:
 		DirAccess.make_dir_recursive_absolute(session_dir)
 		var tmp := session_dir.path_join("bridge.json.tmp")
@@ -535,6 +578,7 @@ class Bridge extends Node:
 			"port": server.get_local_port(), "token": token, "pid": OS.get_process_id(),
 			"godot": Engine.get_version_info()["string"],
 			"physics_tps": Engine.physics_ticks_per_second,
+			"headless": headless,
 		}))
 		f.close()
 		DirAccess.rename_absolute(tmp, session_dir.path_join("bridge.json"))

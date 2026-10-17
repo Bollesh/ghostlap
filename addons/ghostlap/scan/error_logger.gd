@@ -11,7 +11,8 @@ func _log_error(function: String, file: String, line: int, code: String, rationa
 	_mutex.lock()
 	if _items.size() < 200:
 		_items.append({
-			"kind": "script" if error_type == ERROR_TYPE_SCRIPT else "engine",
+			# warnings (push_warning, WARN_PRINT) arrive here too
+			"kind": "warning" if error_type == ERROR_TYPE_WARNING else ("script" if error_type == ERROR_TYPE_SCRIPT else "engine"),
 			"message": rationale if rationale != "" else code,
 			"file": file,
 			"line": line,

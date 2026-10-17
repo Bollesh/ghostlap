@@ -89,6 +89,7 @@ def test_shell_session_finishes_the_long_level(game):
     d = _session_dir(game.proj)
     meta = json.loads((d / "session.json").read_text())
     assert meta["status"] == "ended" and meta["used"]["commands"] < 30
+    assert not meta.get("incidents")   # a clean run fires no incident (item 1.4)
     assert not (game.proj / ".ghostlap/play/active").exists()
     assert (d / "hashes.jsonl").read_text().count("\n") >= meta["final"]["f"] // 60
 
@@ -178,6 +179,7 @@ def test_a_scene_reload_doesnt_break_until_or_the_goal_check(game):
     # the goal is still checked after the reload (here: never met, and no error left behind)
     status = game("play", "status").stdout
     assert "goal not met" in status and "MET" not in status
+    assert "incidents: death ×1" in status   # the reload re-instanced the player
 
 
 def test_bad_goal_expression_fails_cleanly(game):

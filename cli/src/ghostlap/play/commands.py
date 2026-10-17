@@ -77,7 +77,7 @@ def _bridge_call(s: Session, fn):
     try:
         return fn()
     except BridgeError as e:
-        if not s.bridge.alive():
+        if s.bridge.exited():
             raise GhostlapError(s.mark_dead(str(e))) from e
         raise
 
@@ -105,6 +105,7 @@ def cmd_start(args, project: Project) -> int:
             lines.append(f"success: {goal['success']}")
     if prof is None:
         lines.append("note: no .ghostlap/profile.yaml — run `ghostlap scan && ghostlap detect` for player-aware views")
+    lines += [incident_line(i) for i in s.meta.get("load_incidents") or []]
     lines += [header(s, look)] + render_views(look["views"])
     _emit(args, s, "\n".join(lines), {"session": s.id, "look": look})
     return 0
@@ -136,8 +137,14 @@ def _inputs(args, s: Session, frames: int):
                          release=args.release, mouse=args.mouse, keep=args.keep)
 
 
+def incident_line(inc: dict) -> str:
+    where = f" ({inc['file']}:{inc['line']})" if inc.get("file") else ""
+    shot = f" · shot {inc['shot']}" if inc.get("shot") else ""
+    return f"INCIDENT f={inc['f']} {inc['type']} [{inc['class']}]: {inc['why']}{where}{shot}"
+
+
 def _after_step(args, s: Session, res: dict, ran: int, extra: list[str]) -> None:
-    lines = [header(s, res, ran)] + extra
+    lines = [header(s, res, ran)] + extra + [incident_line(i) for i in res.get("incidents") or []]
     if not args.quiet:
         look = _bridge_call(s, lambda: s.look_raw())
         lines += render_views(s.collapse(look["views"]))
@@ -174,6 +181,8 @@ def cmd_until(args, project: Project) -> int:
     u = res.get("until") or {}
     if u.get("met"):
         msg = f"until: true at f={res['f']} after {ran} frames"
+    elif u.get("reason") == "incident":
+        msg = f"until: stopped by an incident ({u.get('incident')}) at f={res['f']} after {ran} frames"
     elif u.get("reason") == "error":
         msg = f"until: stopped at f={res['f']}, the expression failed: {u.get('error')}"
     else:
@@ -226,14 +235,19 @@ def cmd_status(args, project: Project) -> int:
         lines.append(f"frame {m['frame']} · budget used {m['used']}")
     if m.get("cheats"):
         lines.append(f"setup cheats: {len(m['cheats'])} (eval --write)")
+    if m.get("incidents"):
+        lines.append("incidents: " + ", ".join(f"{k} ×{v}" for k, v in m["incidents"].items()))
     lines.append(f"tokens returned so far: ~{m['used']['bytes'] // 4}")
     notes = []
     if (s.dir / "events.jsonl").is_file():
         for ln in (s.dir / "events.jsonl").read_text().splitlines():
             e = json.loads(ln)
-            if e["kind"] in ("note", "goal_met", "crashed", "abandoned", "refused", "goal_error"):
+            if e["kind"] in ("note", "goal_met", "incident", "crashed", "abandoned", "refused", "goal_error"):
                 notes.append(e)
     for e in notes[-12:]:
+        if e["kind"] == "incident":
+            lines.append("  " + incident_line(e))
+            continue
         txt = e.get("text") or e.get("why") or e.get("error") or (f"at f={e['at']}" if "at" in e else "")
         lines.append(f"  f={e['f']} {e['kind']}: {txt}" + (f" (saw {e['saw']})" if e.get("saw") else ""))
     if m.get("verdict"):
