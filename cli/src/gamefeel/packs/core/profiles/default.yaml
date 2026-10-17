@@ -10,4 +10,5 @@ metrics:
   impact.hitstop_frames: {good: [2, 8], warn: [1, 14]}
   impact.knockback:     {good: [0.4, 3.0], warn: [0.15, 5.0]}
   impact.hp_lost:       {good: [1, 1], warn: [1, 1]}
+  impact.feedback:      {good: [2, 7], warn: [1, 7]}
   perf.frame_spikes:    {good: [0, 0], warn: [0, 2]}

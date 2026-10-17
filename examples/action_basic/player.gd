@@ -1,12 +1,12 @@
 extends CharacterBody2D
 ## Platformer player. Every feel-relevant number is exported so gamefeel can point at it.
 
-@export var speed := 260.0
-@export var acceleration := 3600.0
-@export var friction := 3000.0
-@export var jump_velocity := -663.0
-@export var gravity := 1745.0
-@export var fall_gravity_multiplier := 2.0
+@export var speed := 240.0
+@export var acceleration := 1400.0
+@export var friction := 1600.0
+@export var jump_velocity := -560.0
+@export var gravity := 1100.0
+@export var fall_gravity_multiplier := 1.4
 @export var coyote_time := 0.1
 @export var jump_buffer_time := 0.1
 ## Seconds the game freezes when the player is hit (0 = no hitstop).
@@ -34,6 +34,11 @@ var _coyote_left := 0.0
 var _buffer_left := 0.0
 var _invulnerable_left := 0.0
 var _stun_left := 0.0
+
+@onready var _body: CanvasItem = $Body
+@onready var _camera: Camera2D = $Camera2D
+var _shake := 0.0
+var _shake_time := 0.0
 
 
 func _physics_process(delta: float) -> void:
@@ -94,6 +99,22 @@ func _start_attack() -> void:
 	_anim.seek(0.0, true)
 
 
+func _process(delta: float) -> void:
+	# hit feedback: blink while invulnerable, decaying camera shake (deterministic, no randomness)
+	_body.visible = _invulnerable_left <= 0.0 or int(_invulnerable_left * 20.0) % 2 == 0
+	_shake = move_toward(_shake, 0.0, 40.0 * delta)
+	_shake_time += delta
+	_camera.offset = Vector2(sin(_shake_time * 97.0), cos(_shake_time * 71.0)) * _shake
+
+
+func _flash() -> void:
+	# white flash, then red, then back to normal (tweens slow down with hitstop, which reads well)
+	var tween := create_tween()
+	_body.modulate = Color(3.0, 3.0, 3.0)
+	tween.tween_property(_body, "modulate", Color(1.0, 0.35, 0.35), 0.06)
+	tween.tween_property(_body, "modulate", Color.WHITE, 0.25)
+
+
 func take_damage(amount: int, source: Node2D) -> void:
 	if _invulnerable_left > 0.0:
 		return
@@ -101,6 +122,8 @@ func take_damage(amount: int, source: Node2D) -> void:
 	_stun_left = hurt_stun_time
 	health -= amount
 	velocity = Vector2(signf(global_position.x - source.global_position.x) * 300.0, -250.0)
+	_flash()
+	_shake = 8.0
 	if hitstop_time > 0.0:
 		Engine.time_scale = 0.05
 		await get_tree().create_timer(hitstop_time, true, false, true).timeout

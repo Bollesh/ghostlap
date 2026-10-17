@@ -14,6 +14,7 @@ extends SceneTree
 
 const Arena = preload("arena.gd")
 const Sampler = preload("sampler.gd")
+const Presenter = preload("presenter.gd")
 
 var plan: Dictionary
 var runner: Node
@@ -62,6 +63,7 @@ class ProbeRunner extends Node:
 	var summary := {"runs": [], "errors": []}
 	var player_ps: PackedScene
 	var base_dir: String
+	var presenter: RefCounted = null   # render mode (gamefeel clip) only
 
 	func _init(p: Dictionary, t: SceneTree, dir: String) -> void:
 		plan = p
@@ -72,6 +74,8 @@ class ProbeRunner extends Node:
 		if ClassDB.class_exists("Logger"):
 			logger = load(base_dir.path_join("../scan/error_logger.gd").simplify_path()).new()
 			OS.call("add_logger", logger)
+		if plan.get("render", false):
+			RenderingServer.set_default_clear_color(Presenter.BG)
 		player_ps = load(plan["player"]["scene"])
 		if player_ps == null:
 			_fatal("cannot load player scene " + str(plan["player"]["scene"]))
@@ -89,6 +93,8 @@ class ProbeRunner extends Node:
 
 	func _process(_d: float) -> void:
 		process_frames += 1
+		if presenter != null:
+			presenter.follow()
 		if state != State.DONE and process_frames > int(plan.get("max_process_frames", 200000)):
 			summary["errors"].append({"kind": "fatal", "message": "global frame budget exceeded"})
 			_finish()
@@ -167,7 +173,7 @@ class ProbeRunner extends Node:
 		if arena != null:
 			var vars: Dictionary = cal_vars.get(probe["id"], {})
 			arena.build(arena_name, dims, sampler.size, player, vars)
-			if arena_name == "hazard":
+			if arena_name.begins_with("hazard"):
 				var hz := _spawn_hazard()
 				if hz != "":
 					return hz
@@ -187,6 +193,15 @@ class ProbeRunner extends Node:
 				player.global_position += Vector3(o[0], o[1], o[2] if o.size() > 2 else 0.0) * sampler.size.y
 			else:
 				player.global_position += Vector2(o[0], o[1]) * sampler.size.y
+		if plan.get("render", false):
+			presenter = Presenter.new()
+			var title: String = str(probe.get("title", probe["id"]))
+			if cur["is_cal"]:
+				title += "  (setup run)"
+			elif run.get("name", "run") != "run":
+				title += "  (" + str(run["name"]) + ")"
+			presenter.setup(holder, player, dims, sampler.size, arena_name, title, arena != null,
+					arena.hazard if arena != null else null)
 		return ""
 
 	func _instance_player() -> Node:
@@ -368,6 +383,7 @@ class ProbeRunner extends Node:
 			level = null
 		player = null
 		sampler = null
+		presenter = null
 
 	func _finish() -> void:
 		state = State.DONE

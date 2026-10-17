@@ -40,7 +40,7 @@ from typing import Any
 
 import yaml
 
-ARENAS = {"flat", "ledge", "wall", "air", "hazard", "slope", "open"}
+ARENAS = {"flat", "ledge", "wall", "air", "hazard", "hazard_open", "slope", "open"}
 ROLES = {"left", "right", "up", "down", "jump", "dash", "attack"}
 CAL_KEYS = {"left_floor", "landed", "apex", "top_frame", "max_speed", "max_speed_x", "end", "dir_x", "dir_y", "dir_z"}
 TOP_KEYS = {"probe", "title", "description", "dims", "requires", "needs", "arena", "scene", "spawn", "plane",

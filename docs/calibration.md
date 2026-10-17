@@ -22,3 +22,6 @@ game-feel guidance and sanity-checked against the bundled examples. Reports say 
 - Ten official Godot demo projects (`godot-demo-projects`, commit b761b4c) are detected as the
   expected genre. Detection rules were adjusted while looking at these, so they're not an
   independent accuracy test.
+- Visual review of the README GIF showed the platformer `precise` range for `jump.fall_rise_ratio`
+  (then 1.3–2.2) produced falls that looked yanked down. It's now 1.15–1.6, and suggestions aim just
+  inside the range from the violated edge instead of at its midpoint, to avoid overshooting.

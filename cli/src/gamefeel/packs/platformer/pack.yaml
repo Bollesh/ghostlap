@@ -20,3 +20,4 @@ feel:
   jump.buffer_frames: {low: eaten jump inputs}
   jump.variable: {low: no jump-height control, high: tap jumps are tiny}
   jump.height_max: {low: weak jump, high: huge jump}
+  jump.fall_time: {low: yanked down (falls too fast), high: floaty fall}

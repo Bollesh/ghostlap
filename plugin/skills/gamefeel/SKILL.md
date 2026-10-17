@@ -9,9 +9,9 @@ description: Understand an unfamiliar Godot 4 game and measure how it FEELS — 
 scripted micro-tests ("probes") headless at a fixed frame rate, and reports feel metrics
 against genre reference ranges with concrete, file:line-linked fixes.
 
-You (the agent) run the CLI, talk to the user at the two decision points (confirm what the
-game is, choose what to test), write game-specific probes when needed, and apply fixes only
-after the user approves.
+You (the agent) run the CLI, talk to the user at the decision points (confirm what the game
+is, choose what to test, judge the clip of the proposed fix), write game-specific probes when
+needed, and apply fixes only after the user has watched them and approved.
 
 ## Setup
 
@@ -99,37 +99,72 @@ Always validate before running, and fix until valid:
 gamefeel probe validate .gamefeel/probes/dash_into_wall.yaml
 ```
 
-### 5. Run and report
+### 5. Measure
 
 ```bash
 gamefeel check                       # = gamefeel probe run && gamefeel analyze
 gamefeel check --only jump coyote    # just some probes
 ```
 
-The full report is `.gamefeel/report.md` (and `report.json`). In chat, summarise only the
-most important findings — what feels wrong, the measured number vs the range, and the fix —
-grouped by root cause. Mention that ranges are uncalibrated placeholders when the report says so.
+The full report is `.gamefeel/report.md` (and `report.json`). Its suggestions are
+**predictions** from simple models. Don't present them as the fix yet.
 
 If runs fail, read the reason (`failed: <probe>: ...`) before anything else: a player that
 needs its level (script errors in the arena), a missing hazard, or a player without
 `is_on_floor()` (RigidBody) are common. Fix the profile or use a `scene:` probe instead.
 
-### 6. Fix (with approval) and verify
+### 6. Forgiveness first; motion character is the user's call
 
-Suggestions in the report are concrete: property, file:line, current → proposed value, why,
-and predicted effect. Findings that share a property are grouped as one **root cause** with
-one shared value — apply it once.
+Metrics come in two kinds:
 
-1. Propose the changes to the user; apply only what they approve. Respect intentional choices.
-2. Edit the property (usually an `@export` default in a script, or a value in a `.tscn`).
-   For a missing mechanic, `gamefeel pattern <name>` prints a minimal implementation
-   (coyote_time, jump_buffer, variable_jump, fall_gravity, hitstop, invulnerability,
-   normalize_diagonal, camera_shake).
-3. `gamefeel scan && gamefeel check --only <affected probes>` and confirm the metric moved
-   into range **without pushing another one out**. Fixing one thing can expose the next
-   (e.g. faster acceleration cancels knockback) — that's expected, iterate.
-4. Stop when there are no warnings, or record intentional deviations in `profile.yaml`:
-   `accepted: {jump.time_to_apex: "floaty on purpose — dream level"}`.
+- **Forgiveness, feedback, correctness**: coyote time, jump buffer, variable jump height,
+  hitstop, invulnerability, hit feedback, input latency, diagonal speed. These help nearly
+  every game. `gamefeel propose` fixes these by default.
+- **Motion character (taste)**: acceleration, stopping, turnaround, jump timing, fall speed,
+  dash, camera lag. There's no universal "good". Momentum-heavy, floaty movement is a valid
+  style and often reads as *more* game-like than snappy movement. `propose` reports these under
+  "Motion character left alone" and does **not** change them unless asked.
+
+Only retune motion when the user wants a different feel. Then pick a `style` (e.g.
+platformer `floaty` or `precise`) with them and run `gamefeel propose --scope all`, or set
+`tune: all` in `profile.yaml`. Show the clip; snappy settings on a plain rectangle can look stiff.
+
+### 7. Verify the fix in a scratch copy, then SHOW it
+
+```bash
+gamefeel propose        # applies suggestions to .gamefeel/work/<stamp>/ (not the real project), re-measures,
+                        # repeats until clean; each value changes at most 2x per pass; forgiveness/feedback only
+                        # unless --scope all
+gamefeel clip           # renders "now" vs "proposed" with identical inputs -> GIF, MP4 and a contact-sheet PNG
+```
+
+1. Read `proposal.md`: the net changes, every metric before → after (**measured**), any
+   regressions, predictions that were off, and what still needs code (patterns).
+2. **Look at the clip's contact sheet yourself** (read the `-sheet.png` with your image
+   tool) before saying anything about how it feels. Check that jumps rise and land, nothing
+   stands on air, and hits visibly react. Describe only what the frames show; if you're unsure
+   what a frame shows, say so rather than guess.
+3. Give the user the GIF/MP4 path and a short table of the changes, and **ask them to watch
+   it**. A clean report is *not* proof it feels right: the ranges are uncalibrated placeholders.
+4. If they say something feels off, record it in their words and try again:
+
+   ```bash
+   gamefeel feedback "the player falls too fast"   # tightens this project's ranges (profile.yaml)
+   gamefeel propose && gamefeel clip
+   ```
+
+   If `feedback` can't map the words, pick the metric with the user:
+   `gamefeel feedback --metric jump.fall_time --direction low`.
+5. Only when the user approves: `gamefeel apply` writes the proposal's changes to the
+   project (it refuses if those files changed since the proposal). Then
+   `gamefeel scan && gamefeel check` to confirm in the real project.
+
+For a missing mechanic, which no number can fix, `gamefeel pattern <name>` prints a minimal
+implementation (coyote_time, jump_buffer, variable_jump, fall_gravity, hitstop, invulnerability,
+normalize_diagonal, camera_shake, hit_feedback). Add it with the user's approval, then `propose` again.
+
+Respect intentional choices: `accepted: {jump.time_to_apex: "floaty on purpose — dream level"}` in
+`profile.yaml`, or a different `style`.
 
 ## Using the graph instead of reading files
 
@@ -146,6 +181,8 @@ gamefeel graph sql "select name, props from nodes where kind='Property' and name
 ## Rules
 
 - Never claim a feel judgment that isn't backed by a metric in the report; cite the number.
+- Never call something "fixed" or "feels right" from numbers alone. Show the clip and get the
+  user's verdict; their eye outranks the placeholder ranges (record it with `gamefeel feedback`).
 - Never edit game files without the user's approval. Never edit `.gamefeel/runs/`.
 - gamefeel measures *mechanical* feel. Whether the game is *fun* is the user's call — say so
   if asked.

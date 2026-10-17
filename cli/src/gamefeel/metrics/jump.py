@@ -174,3 +174,24 @@ def buffer_frames(pd: ProbeData) -> MetricValue:
         return none("frames", "calibration fall never landed")
     mv.details["landing_frame"] = cal_landed
     return mv
+
+
+@metric("jump.fall_time", "s", "Apex to landing of a full jump on flat ground. Short = the player is yanked down; long = floaty.")
+def fall_time(pd: ProbeData) -> MetricValue:
+    arcs = _arcs(pd)
+    if not arcs or arcs[-1][1].get("apex") is None or arcs[-1][1].get("landing") is None:
+        return none("s", "no landed jump recorded")
+    r, a = arcs[-1]
+    return MetricValue(round((a["landing"] - a["apex"]) / r.fps, 4), "s",
+                       evidence={"probe": pd.id, "run": r.name, "frames": [a["apex"], a["landing"]]})
+
+
+@metric("jump.max_fall_speed", "H/s", "Fastest downward speed while falling from 8 body-heights, in player-heights per second.")
+def max_fall_speed(pd: ProbeData) -> MetricValue:
+    run = pd.cal if pd.cal and pd.cal.ok else (pd.ok_runs()[0] if pd.ok_runs() else None)
+    if run is None:
+        return none("H/s", "no fall recorded")
+    fastest = max((-run.vy(s) for s in run.frames), default=0.0)
+    if fastest <= 0:
+        return none("H/s", "the player never fell")
+    return MetricValue(round(fastest / run.height, 3), "H/s", evidence={"probe": pd.id, "run": run.name})

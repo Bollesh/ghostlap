@@ -14,11 +14,19 @@ size = Vector2(200, 24)
 [node name="Ground" type="StaticBody2D" parent="."]
 position = Vector2(0, 300)
 
+[node name="Visual" type="Polygon2D" parent="Ground"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-2000, -20, 2000, -20, 2000, 20, -2000, 20)
+
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Ground"]
 shape = SubResource("RectangleShape2D_ground")
 
 [node name="Ledge" type="StaticBody2D" parent="."]
 position = Vector2(500, 180)
+
+[node name="Visual" type="Polygon2D" parent="Ledge"]
+color = Color(0.25, 0.3, 0.35, 1)
+polygon = PackedVector2Array(-100, -12, 100, -12, 100, 12, -100, 12)
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="Ledge"]
 shape = SubResource("RectangleShape2D_ledge")

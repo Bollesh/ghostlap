@@ -1,5 +1,5 @@
 ; Engine configuration file.
-; gamefeel example: a platformer that is tuned to feel tight.
+; gamefeel example: a platformer that keeps its floaty, momentum-heavy motion and adds forgiveness and hit feedback.
 
 config_version=5
 

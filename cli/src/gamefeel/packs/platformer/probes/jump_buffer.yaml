@@ -11,4 +11,4 @@ calibrate:
 sweep: {var: k, from: 0, to: 12}
 inputs:
   - {at: "cal.landed + 1 - k", action: jump, hold: 1}
-measure: [jump.buffer_frames]
+measure: [jump.buffer_frames, jump.max_fall_speed]

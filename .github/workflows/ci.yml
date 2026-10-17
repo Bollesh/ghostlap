@@ -24,7 +24,9 @@ jobs:
           unzip -q godot.zip
           mv Godot_v${{ matrix.godot }}_linux.x86_64 "$RUNNER_TEMP/godot"
           echo "GAMEFEEL_GODOT=$RUNNER_TEMP/godot" >> "$GITHUB_ENV"
+      - name: Install ffmpeg and xvfb (for clip rendering tests)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
       - run: uv sync
-      - run: uv run pytest -q
+      - run: xvfb-run -a -s "-screen 0 1280x720x24" uv run pytest -q
       - name: Build package
         run: uv build

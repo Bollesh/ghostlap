@@ -13,14 +13,18 @@ pytestmark = pytest.mark.godot
 
 # example -> metrics that must be flagged (warn/error); "tuned" examples must have none
 EXPECTED = {
-    "platformer_floaty": {"jump.time_to_apex", "jump.coyote_frames", "jump.buffer_frames", "jump.variable",
-                          "jump.fall_rise_ratio", "move.accel_time", "move.decel_time", "impact.hitstop_frames"},
+    "platformer_floaty": {"jump.coyote_frames", "jump.buffer_frames", "jump.variable", "impact.hitstop_frames"},
     "platformer_tuned": set(),
-    "topdown_sluggish": {"move.accel_time", "move.decel_time", "move.diagonal_ratio", "dash.duration_frames",
-                         "dash.cooldown_frames", "impact.hitstop_frames"},
+    "topdown_sluggish": {"move.diagonal_ratio", "dash.cooldown_frames", "impact.hitstop_frames", "impact.feedback"},
     "topdown_tuned": set(),
-    "action_basic": {"attack.startup_frames", "attack.combo_window_frames"},
-    "third_person_basic": {"move.turn_time", "camera.follow_lag", "jump.coyote_frames"},
+    "action_basic": {"attack.combo_window_frames"},
+    "third_person_basic": {"jump.coyote_frames", "jump.buffer_frames"},
+}
+# motion character is described as "style", never flagged, by default
+STYLE = {
+    "platformer_floaty": {"jump.time_to_apex", "move.accel_time", "move.decel_time"},
+    "topdown_sluggish": {"move.accel_time", "move.decel_time"},
+    "third_person_basic": {"move.turn_time", "camera.follow_lag"},
 }
 
 
@@ -43,27 +47,102 @@ def test_example(example, name):
     assert EXPECTED[name] <= flagged, f"missing: {EXPECTED[name] - flagged}"
     if not EXPECTED[name]:
         assert flagged == set(), f"tuned example should be clean, got {flagged}"
+    styled = {f["metric"] for f in rep["findings"] if f["severity"] == "style"}
+    assert STYLE.get(name, set()) <= styled, f"expected as style: {STYLE.get(name, set()) - styled}"
     for f in rep["findings"]:
         if f["severity"] in ("warn", "error"):
             assert f["suggestions"], f"{f['metric']} has no suggestion"
 
 
-def test_fix_loop_converges(example):
-    """Apply the report's own property suggestions to the floaty platformer twice: it ends clean."""
-    import re
+def _setup(root):
+    p = Project(root)
+    scan(p)
+    prof = draft_profile(detect(Graph(p.graph_db), root), load_packs(root))
+    prof["confirmed"] = True
+    return p, prof
+
+
+def test_propose_is_verified_and_apply_writes_it(example):
+    """propose fixes the floaty platformer in a scratch copy (real project untouched), without
+    regressions or jump-height drift; apply then writes exactly those values."""
+    from gamefeel import propose as prop
+    from gamefeel.edits import Edit, read_value
 
     root = example("platformer_floaty")
-    for _ in range(3):
-        rep = _pipeline(root)
-        props = {}
-        for f in rep["findings"]:
-            for s in f.get("suggestions", []):
-                if s["kind"] == "property" and isinstance(s.get("proposed"), (int, float)):
-                    props[(s["file"], s["property"])] = s["proposed"]
-        if not props:
-            break
-        for (res, prop), val in props.items():
-            path = root / res.removeprefix("res://")
-            path.write_text(re.sub(rf"(@export var {prop} := )[-0-9.]+", lambda m: m.group(1) + f"{float(val):.4f}", path.read_text()))
-    flagged = [f["metric"] for f in rep["findings"] if f["severity"] in ("warn", "error")]
-    assert flagged == []
+    original = (root / "player.gd").read_text()
+    p, prof = _setup(root)
+    res = prop.propose(p, prof, scope="all")
+    assert (root / "player.gd").read_text() == original, "propose must not touch the real project"
+    assert res["clean"] and not res["regressions"], res["remaining"]
+    m = {x["metric"]: x for x in res["metrics"]}
+    assert abs(m["jump.height_max"]["after"] - m["jump.height_max"]["before"]) / m["jump.height_max"]["before"] < 0.1
+    assert m["jump.fall_time"]["severity_after"] == "ok"
+    out = prop.apply(p)
+    assert out["applied"] and not out["skipped"]
+    for c in res["changes"]:
+        got = read_value(root, Edit(c["kind"], c["file"], c["property"], c["value"], node=c.get("node")))
+        assert abs(float(got) - float(c["value"])) < 1e-3, c
+    rep = _pipeline(root)
+    assert not [f for f in rep["findings"] if f["severity"] in ("warn", "error")]
+
+
+def test_default_scope_keeps_motion_character(example):
+    """By default only forgiveness/feedback is fixed: the floaty game's motion stays floaty."""
+    from gamefeel import propose as prop
+
+    root = example("platformer_floaty")
+    p, prof = _setup(root)
+    res = prop.propose(p, prof)
+    changed = {c["property"] for c in res["changes"]}
+    assert {"coyote_time", "jump_buffer_time", "hitstop_time", "jump_cut"} <= changed
+    assert not changed & {"acceleration", "friction", "gravity", "jump_velocity", "fall_gravity_multiplier"}
+    m = {x["metric"]: x for x in res["metrics"]}
+    assert m["jump.time_to_apex"]["after"] == m["jump.time_to_apex"]["before"]
+    assert {t["metric"] for t in res["taste_left_alone"]} >= {"jump.time_to_apex", "move.accel_time"}
+    assert res["clean"]
+
+
+def test_apply_refuses_stale_files(example):
+    from gamefeel import propose as prop
+
+    root = example("platformer_floaty")
+    p, prof = _setup(root)
+    prop.propose(p, prof, passes=1)
+    gd = root / "player.gd"
+    gd.write_text(gd.read_text().replace("@export var coyote_time := 0.0", "@export var coyote_time := 0.05"))
+    out = prop.apply(p)
+    assert any(s["property"] == "coyote_time" and "changed since" in s["why"] for s in out["skipped"])
+
+
+def test_feedback_steers_the_next_proposal(example):
+    from gamefeel import propose as prop
+    from gamefeel.detect.detect import read_profile
+    from gamefeel.feedback import feedback
+
+    root = example("platformer_floaty")
+    p, prof = _setup(root)
+    p.profile_path.write_text(__import__("yaml").safe_dump({**prof, "tune": "all"}))
+    prof = {**prof, "tune": "all"}
+    first = prop.propose(p, prof)
+    fall1 = {x["metric"]: x for x in first["metrics"]}["jump.fall_time"]["after"]
+    feedback(p, "the player falls too fast")
+    prof2 = read_profile(p.profile_path)
+    second = prop.propose(p, prof2)
+    fall2 = {x["metric"]: x for x in second["metrics"]}["jump.fall_time"]["after"]
+    assert fall2 > fall1, (fall1, fall2)
+
+
+@pytest.mark.render
+def test_clip_renders_now_vs_proposal(example):
+    from pathlib import Path
+
+    from gamefeel import propose as prop
+    from gamefeel.clip import clip
+
+    root = example("platformer_floaty")
+    p, prof = _setup(root)
+    prop.propose(p, prof, passes=2)
+    out = clip(p, prof, probes=["jump", "hit_react"])
+    assert out["right"] == "proposed" and "jump" in out["probes"]
+    for k in ("gif", "sheet"):
+        assert Path(out[k]).is_file() and Path(out[k]).stat().st_size > 10_000

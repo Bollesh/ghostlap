@@ -4,7 +4,7 @@ description: Character moving freely in 2D without gravity (action RPGs, twin-st
 includes: [core]
 dims: [2d]
 plane: xy
-vars: {move: right, back: left, ground: open}
+vars: {move: right, back: left, ground: open, hazard_arena: hazard_open}
 default_style: default
 detect:
   requires: {dims: 2d}

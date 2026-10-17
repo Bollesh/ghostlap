@@ -11,4 +11,8 @@ script = ExtResource("1_slime")
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("CircleShape2D_slime")
 
+[node name="Body" type="Polygon2D" parent="."]
+color = Color(0.45, 0.8, 0.35, 1)
+polygon = PackedVector2Array(-10, 4, -8, -4, -3, -9, 3, -9, 8, -4, 10, 4, 6, 9, -6, 9)
+
 [connection signal="body_entered" from="." to="." method="_on_body_entered"]

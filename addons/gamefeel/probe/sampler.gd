@@ -8,6 +8,9 @@
 #   cam camera position    co  camera offset     yaw [body, model] degrees (3D)
 #   in  actions held       pt  wall time since previous sample (ms; with --fixed-fps this is
 #       the real cost of the tick)   ts  Engine.time_scale   pz  tree paused
+#   vz  player visuals [[r,g,b,a,visible], ...] (only when changed; flash/blink detection)
+#   snd playing audio players in the scene (only when changed)
+#   ptc emitting particle systems in the scene (only when changed)
 extends RefCounted
 
 const MODEL_RE := "(?i)model|mesh|visual|skin|armature|pivot|body|rig|character|graphics|sprite"
@@ -26,6 +29,11 @@ var last_props := {}
 var model: Node = null
 var _prev_pos = null
 var _last_usec := 0
+var visuals: Array = []        # player itself (if visual) + visual descendants, for flash/blink
+var _last_vz = null
+var _last_snd := -1
+var _last_ptc := -1
+var _fx_nodes: Array = []      # cached audio/particle nodes, refreshed periodically
 
 
 func _init(p: Node, d: String, pattern: String, paths: Array, props: Array) -> void:
@@ -35,6 +43,7 @@ func _init(p: Node, d: String, pattern: String, paths: Array, props: Array) -> v
 	hitbox_paths = paths
 	track_props = props
 	size = _measure_size()
+	visuals = _find_visuals()
 	if dims == "3d":
 		var re := RegEx.new()
 		re.compile(MODEL_RE)
@@ -88,6 +97,56 @@ func _measure_size() -> Vector2:
 	return best
 
 
+func _find_visuals() -> Array:
+	var out := []
+	if player is CanvasItem:
+		out.append(player)
+	for n in _walk(player, 3):
+		if n == player or out.size() >= 4:
+			continue
+		if n is Sprite2D or n is AnimatedSprite2D or n is Polygon2D or n is TextureRect or n is Sprite3D \
+				or n is AnimatedSprite3D or n is MeshInstance3D:
+			out.append(n)
+	return out
+
+
+func _visual_state() -> Array:
+	var out := []
+	for v in visuals:
+		if not is_instance_valid(v):
+			continue
+		var c := Color.WHITE
+		if v is CanvasItem:
+			c = v.modulate * v.self_modulate
+		elif v is SpriteBase3D:
+			c = v.modulate
+		elif v is GeometryInstance3D:
+			c = Color(1, 1, 1, 1.0 - v.transparency)
+		var vis: bool = v.is_visible_in_tree() if v.has_method("is_visible_in_tree") else true
+		out.append([snappedf(c.r, 0.01), snappedf(c.g, 0.01), snappedf(c.b, 0.01), snappedf(c.a, 0.01), vis])
+	return out
+
+
+func _count_fx() -> Array:
+	if Engine.get_physics_frames() % 15 == 0 or _fx_nodes.is_empty():
+		_fx_nodes.clear()
+		var root := player.get_tree().root
+		for t in ["AudioStreamPlayer", "AudioStreamPlayer2D", "AudioStreamPlayer3D",
+				"GPUParticles2D", "CPUParticles2D", "GPUParticles3D", "CPUParticles3D"]:
+			_fx_nodes.append_array(root.find_children("*", t, true, false))
+	var snd := 0
+	var ptc := 0
+	for n in _fx_nodes:
+		if not is_instance_valid(n):
+			continue
+		if n is AudioStreamPlayer or n is AudioStreamPlayer2D or n is AudioStreamPlayer3D:
+			if n.playing:
+				snd += 1
+		elif n.emitting:
+			ptc += 1
+	return [snd, ptc]
+
+
 func on_floor() -> Variant:
 	if player.has_method("is_on_floor"):
 		return player.is_on_floor()
@@ -112,6 +171,10 @@ func speed() -> float:
 func begin() -> void:
 	samples.clear()
 	process_log.clear()
+	_last_vz = null
+	_last_snd = -1
+	_last_ptc = -1
+	_fx_nodes.clear()
 	_prev_pos = player.global_position
 	_last_usec = Time.get_ticks_usec()
 
@@ -179,6 +242,17 @@ func sample(f: int) -> void:
 		s["ts"] = Engine.time_scale
 	if player.get_tree().paused:
 		s["pz"] = true
+	var vz := _visual_state()
+	if vz != _last_vz:
+		s["vz"] = vz
+		_last_vz = vz
+	var fx := _count_fx()
+	if fx[0] != _last_snd:
+		s["snd"] = fx[0]
+		_last_snd = fx[0]
+	if fx[1] != _last_ptc:
+		s["ptc"] = fx[1]
+		_last_ptc = fx[1]
 	samples.append(s)
 	_prev_pos = player.global_position
 

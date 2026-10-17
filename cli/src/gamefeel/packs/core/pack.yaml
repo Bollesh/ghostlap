@@ -4,7 +4,7 @@ description: >
   Metrics every controlled-character game shares: input latency, starting, stopping and
   turning, hit impact and frame cost. Not selectable on its own; genre packs include it.
 selectable: false
-vars: {move: right, back: left, ground: flat}
+vars: {move: right, back: left, ground: flat, hazard_arena: hazard}
 default_style: default
 feel:
   input.latency_frames: {high: unresponsive}
@@ -14,4 +14,5 @@ feel:
   impact.hitstop_frames: {low: weightless hits, high: sticky hits}
   impact.knockback: {low: hits have no push, high: hits fling the player}
   impact.hp_lost: {high: multi-hit on one contact (no invulnerability frames)}
+  impact.feedback: {low: hits barely register visually}
   perf.frame_spikes: {high: hitches}

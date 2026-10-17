@@ -266,6 +266,76 @@ def cmd_check(args) -> int:
     return cmd_analyze(argparse.Namespace(**{**vars(args), "run": None}))
 
 
+def cmd_propose(args) -> int:
+    from . import propose as prop
+
+    p = _project(args)
+    prof = _profile(p, args.force)
+    res = prop.propose(p, prof, godot=args.godot, passes=args.passes, cap=args.cap, only=args.only, scope=args.scope)
+    md = (p.state / "proposals" / res["stamp"] / "proposal.md")
+    if args.json:
+        print(json.dumps(res, indent=1, default=str))
+    else:
+        print(md.read_text())
+        print(f"proposal: {md}\nnext: look at it (`gamefeel clip`), then `gamefeel apply` to write these changes to the project")
+    return 0
+
+
+def cmd_apply(args) -> int:
+    from . import propose as prop
+
+    p = _project(args)
+    res = prop.apply(p, args.proposal, only=args.only, force=args.force)
+    if args.json:
+        print(json.dumps(res, indent=1, default=str))
+    else:
+        for c in res["applied"]:
+            print(f"  applied  {c['file']}{' :: ' + c['node'] if c.get('node') else ''}  {c['property']}: {c['original']} → {c['value']}")
+        for c in res["skipped"]:
+            print(f"  SKIPPED  {c['file']}  {c['property']}: {c['why']}")
+        print("next: gamefeel scan && gamefeel check  (and tell gamefeel what still feels off: `gamefeel feedback \"...\"`)")
+    return 0 if not res["skipped"] else 1
+
+
+def cmd_clip(args) -> int:
+    from .clip import clip
+
+    p = _project(args)
+    prof = _profile(p, force=True)
+    against = None if args.alone else (args.against or "proposal")
+    res = clip(p, prof, against=against, probes=args.probes, save_as=args.save_as, godot=args.godot)
+    if args.json:
+        print(json.dumps(res, indent=1))
+    else:
+        print(f"clip ({', '.join(res['probes'])}): {res['left']}" + (f" vs {res['right']}" if res.get("right") else ""))
+        for k in ("gif", "mp4", "sheet"):
+            if res.get(k):
+                print(f"  {k:5s} {res[k]}")
+        if res.get("caption"):
+            print(f"  caption: {res['caption']}")
+        print("Look at it before applying anything; agents: read the sheet PNG.")
+    return 0
+
+
+def cmd_feedback(args) -> int:
+    from .feedback import feedback
+
+    p = _project(args)
+    text = " ".join(args.text) if args.text else None
+    res = feedback(p, text, args.metric, args.direction, dry_run=args.dry_run)
+    if args.json:
+        print(json.dumps(res, indent=1))
+        return 0
+    print(f"feedback: {text or ''}")
+    for c in res["changes"]:
+        val = f" (now {c['value']})" if c.get("value") is not None else ""
+        print(f"  {c['metric']} too {c['direction']}{val}: {c['result']}")
+    if any(c.get("changed") for c in res["changes"]):
+        print(("(dry run) " if res["dry_run"] else "") + f"saved to {res['profile']} under ranges:/feedback:. "
+              "Next: gamefeel propose && gamefeel clip")
+    return 0
+
+
 def cmd_metrics(args) -> int:
     from .metrics import REGISTRY
 
@@ -392,6 +462,36 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--file", action="append")
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_check)
+
+    s = sub.add_parser("propose", parents=[common], help="verify fixes in a scratch copy (passes until clean)")
+    s.add_argument("--passes", type=int, default=4)
+    s.add_argument("--cap", type=float, default=2.0, help="max change factor per value per pass (default 2)")
+    s.add_argument("--scope", choices=["forgiveness", "all"],
+                   help="forgiveness (default): fix forgiveness/feedback/correctness only, leave motion character alone; "
+                        "all: also retune motion toward the profile's style")
+    s.add_argument("--only", nargs="+", help="probe ids to use")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(fn=cmd_propose)
+
+    s = sub.add_parser("apply", parents=[common], help="write a verified proposal's changes to the project")
+    s.add_argument("--proposal", help="proposal stamp (default: latest)")
+    s.add_argument("--only", nargs="+", help="only these property names")
+    s.add_argument("--force", action="store_true", help="apply even if files changed since the proposal")
+    s.set_defaults(fn=cmd_apply)
+
+    s = sub.add_parser("clip", parents=[common], help="render probes side by side (now vs proposal / saved clip) to GIF/MP4")
+    s.add_argument("--against", help="'proposal' (default), or a saved clip name")
+    s.add_argument("--alone", action="store_true", help="render only the current project")
+    s.add_argument("--save-as", help="also save this render under a name, e.g. before")
+    s.add_argument("--probes", nargs="+", help="probe ids to show (default: a showcase set)")
+    s.set_defaults(fn=cmd_clip)
+
+    s = sub.add_parser("feedback", parents=[common], help='record how it feels, e.g. gamefeel feedback "falls too fast"')
+    s.add_argument("text", nargs="*", help="what feels wrong, in plain words")
+    s.add_argument("--metric", help="map explicitly to a metric (see `gamefeel metrics`)")
+    s.add_argument("--direction", choices=["high", "low"], help="the metric's value is too high / too low")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_feedback)
 
     for name, fn, hlp in (("metrics", cmd_metrics, "list metrics"), ("packs", cmd_packs, "list genre packs")):
         s = sub.add_parser(name, parents=[common], help=hlp)

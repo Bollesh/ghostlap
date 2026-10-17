@@ -2,15 +2,20 @@
 
 **A linter for game feel in Godot 4.** gamefeel reads an unfamiliar Godot project, works out
 what kind of game it is, runs scripted micro-tests headless, and tells you, and your AI agent,
-*how it feels* in numbers, with concrete fixes:
+*how it feels* in numbers, with concrete fixes it verifies before you apply them:
+
+![Same inputs: the floaty example platformer now, and with gamefeel's proposal](docs/media/examples/platformer_floaty.gif)
+
+*The floaty example platformer replaying identical inputs: as it is ("now") and with gamefeel's
+verified proposal. Its floaty movement is kept; gamefeel adds coyote time, a jump buffer,
+short hops on tapped jumps and hitstop. More examples [below](#examples).*
 
 ```
-### ❌ jump.time_to_apex = 0.617 s (good: 0.3–0.45) — floaty
-- Set `jump_velocity` -420 → -691 (res://player.gd:7) → time_to_apex 0.62s → 0.38s, height unchanged
-- Set `gravity` 700 → 1893 (res://player.gd:8)
-
 ### ❌ jump.coyote_frames = 0 frames (good: 4–8) — unforgiving ledges
-- Set `coyote_time` 0 → 0.1 (res://player.gd:10)
+- Set `coyote_time` 0 → 0.087 (res://player.gd:10) → ≈5 frames at 60 fps
+
+### ❌ jump.variable = 1 x (good: 1.5–4) — no jump-height control
+- Set `jump_cut` 1 → 0.5 (res://player.gd:15): short taps give lower jumps
 ```
 
 It's built to be driven by an AI coding agent (a Claude Code skill is included), but works
@@ -36,6 +41,22 @@ fine by hand.
 4. **Suggests fixes.** Findings point at the exact property (file:line, current → proposed),
    using simple physics models where they exist (a jump keeps its height while its timing
    changes). Findings that share a cause are grouped and get one shared value.
+5. **Verifies them instead of trusting them.** `gamefeel propose` applies the suggestions to a
+   scratch copy, re-measures, and repeats until clean. Each value moves at most 2× per pass and
+   coupled values move together. You get the measured before → after, regressions and prediction
+   errors; your project is untouched until `gamefeel apply`.
+6. **Shows you.** `gamefeel clip` renders "now" vs "proposed" with identical inputs as a GIF/MP4
+   (plus a contact sheet an agent can read). A clean report isn't proof that it feels right;
+   watching is.
+7. **Listens.** `gamefeel feedback "falls too fast"` turns your words into this project's ranges,
+   so the next proposal moves toward what you want.
+
+**Forgiveness first, motion is your call.** Coyote time, jump buffering, variable jump height,
+hitstop, invulnerability, hit feedback, input latency and diagonal speed help almost every game,
+so gamefeel fixes those. *How the character moves* (acceleration, stopping, jump timing, fall
+speed) is style: floaty, momentum-heavy movement is a valid choice and often reads as more
+game-like than snappy movement. gamefeel describes it but only changes it if you ask
+(`tune: all` in `profile.yaml`, or `gamefeel propose --scope all`).
 
 ## Quick start
 
@@ -51,6 +72,10 @@ gamefeel detect        # what is this game? writes a draft .gamefeel/profile.yam
 #   review/edit .gamefeel/profile.yaml, then:
 gamefeel confirm
 gamefeel check         # run probes + analyze -> .gamefeel/report.md
+gamefeel propose       # verify the fixes in a scratch copy -> .gamefeel/proposals/<stamp>/proposal.md
+gamefeel clip          # watch now vs proposed side by side (needs ffmpeg and a display, or xvfb-run)
+gamefeel feedback "the jump feels floaty"   # if something still feels off; then propose + clip again
+gamefeel apply         # write the proposal's changes to your project
 ```
 
 gamefeel only writes to `.gamefeel/` (plus Godot's own `.godot/` import cache). It runs its
@@ -93,6 +118,23 @@ if needed, and applies fixes only after you approve them.
 Puzzle packs (tile-matching, block-pushing, logic grids, physics puzzles) are planned for
 v1.x. Packs are plain YAML, so you can write your own: see [docs/packs.md](docs/packs.md).
 
+## Examples
+
+Each example replays identical inputs. Left is the game as it is; right is gamefeel's verified
+proposal (forgiveness and feedback only; motion untouched).
+
+| | |
+|---|---|
+| **platformer_floaty**: coyote time, jump buffer, short hops, hitstop | ![](docs/media/examples/platformer_floaty.gif) |
+| **topdown_sluggish**: normalized diagonals, dash cooldown, hitstop | ![](docs/media/examples/topdown_sluggish.gif) |
+| **action_basic**: a combo window | ![](docs/media/examples/action_basic.gif) |
+| **third_person_basic** (3D): coyote time, jump buffer | ![](docs/media/examples/third_person_basic.gif) |
+| **platformer_tuned**: the floaty platformer with forgiveness and hit feedback built in (nothing to propose) | ![](docs/media/examples/platformer_tuned.gif) |
+| **topdown_tuned**: smooth movement, normalized diagonals, hit feedback (nothing to propose) | ![](docs/media/examples/topdown_tuned.gif) |
+
+The probe arenas are deliberately plain: grey floor, markings every two body heights, and a
+camera that follows sideways at a fixed height so jump arcs stay readable.
+
 ## Writing a probe
 
 ```yaml
@@ -120,6 +162,10 @@ assert: {dash.distance: {max: 6}}
 | `graph profile` / `graph query NAME …` / `graph sql "…"` | query the graph (`who-reads`, `exports-of`, `script-of`, `instanced-by`, `scenes-with`, `node`, `path`, `search`) |
 | `probe list` / `probe validate FILE…` / `probe run [--only …]` | probes |
 | `analyze [--run DIR]` / `check` | report / run + report |
+| `propose [--scope forgiveness\|all] [--passes N] [--cap X]` | verify fixes in a scratch copy, until clean |
+| `clip [--against proposal\|NAME] [--alone] [--save-as NAME] [--probes …]` | render side-by-side GIF/MP4 + contact sheet |
+| `feedback "words"` / `feedback --metric M --direction high\|low` | record how it feels; tightens this project's ranges |
+| `apply [--proposal STAMP] [--only PROP…]` | write a verified proposal to the project |
 | `metrics`, `packs`, `pattern NAME`, `doctor`, `init` | reference & environment |
 
 Every command accepts `--project DIR` and `--json`.

@@ -6,11 +6,13 @@
 #   wall    flat floor + wall 6H away (3D: a room of four walls)
 #   air     floor, player spawns 8H up (use settle: none)
 #   hazard  flat floor + the profile's hazard scene 4H ahead
+#   hazard_open  no floor (top-down) + the hazard 4H ahead, level with the player
 #   slope   flat floor + 30° ramp starting 2H ahead (3D: along the calibration run's direction)
 #   open    nothing (top-down / no gravity)
 extends Node
 
 var hazard: Node = null
+var arena_name := ""
 var _layer := 1
 var _mask := 1
 
@@ -19,6 +21,7 @@ func build(arena_name: String, dims: String, size: Vector2, player: Node, vars: 
 	_mask = player.get("collision_layer") if player.get("collision_layer") != null else 1
 	var player_mask: int = player.get("collision_mask") if player.get("collision_mask") != null else 1
 	_layer = world_layer(player, player_mask, dims)
+	self.arena_name = arena_name
 	var h := size.y
 	if dims == "3d":
 		_build_3d(arena_name, h, vars)
@@ -71,7 +74,7 @@ func spawn_position(arena_name: String, dims: String, size: Vector2) -> Variant:
 		return Vector3(0, h, 0)
 	if arena_name == "air":
 		return Vector2(0, -8 * h)
-	if arena_name == "open":
+	if arena_name == "open" or arena_name == "hazard_open":
 		return Vector2.ZERO
 	return Vector2(0, -h)
 
@@ -83,6 +86,8 @@ func place_hazard(spawn: Variant, dims: String, size: Vector2, vars: Dictionary)
 	if dims == "3d":
 		var d := _dir3(vars, Vector3(1, 0, 0))
 		hazard.global_position = Vector3(d.x * 4 * h, h * 0.5, d.z * 4 * h)
+	elif arena_name == "hazard_open":
+		hazard.global_position = Vector2(spawn.x + 4 * h, spawn.y)
 	else:
 		hazard.global_position = Vector2(spawn.x + 4 * h, -h * 0.5)
 
@@ -119,7 +124,7 @@ func _rect(w: float, hgt: float) -> RectangleShape2D:
 func _build_2d(arena_name: String, h: float) -> void:
 	const FAR := 100000.0
 	match arena_name:
-		"open":
+		"open", "hazard_open":
 			pass
 		"ledge":
 			var edge := 4 * h

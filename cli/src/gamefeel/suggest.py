@@ -9,6 +9,10 @@ from simple physics models where one exists:
 * fall/rise ratio: r = sqrt(g_fall / g_rise), so multiplier' = multiplier * (r*/r)^2
 * accel/decel/turn with constant acceleration: time is inversely proportional to the rate
   (a property named *_time/_duration is proportional instead)
+
+Scaled suggestions carry `exponent` (metric ∝ knob^exponent) and `metric_value` so findings
+that share a knob can be given one value (analyze._combine), and so `gamefeel propose` can
+check its predictions against re-measured results.
 """
 
 from __future__ import annotations
@@ -44,16 +48,33 @@ KNOBS: dict[str, list[str]] = {
     "dash_cooldown": [r"dash_cooldown|dash_delay"],
     "turn_rate": [r"turn_(speed|rate)|rotation_speed|rot_speed|angular_(speed|accel)|turn_smooth"],
     "camera_follow": [r"follow_speed|camera_speed|smooth(ing)?_speed|cam_lerp|lerp_speed|camera_lerp"],
+    "normalize": [r"normali[sz]e|limit_length|clamp_input"],
 }
 
 PATTERNS = {
     "coyote": "coyote_time", "buffer": "jump_buffer", "jump_cut": "variable_jump", "fall_multiplier": "fall_gravity",
     "hitstop": "hitstop", "iframes": "invulnerability", "diagonal": "normalize_diagonal", "shake": "camera_shake",
+    "feedback": "hit_feedback",
 }
 
 
 def _mid(r: list | None) -> float | None:
     return (r[0] + r[1]) / 2 if r else None
+
+
+INSIDE = 0.3  # how far into the good range a fix aims, from the edge that was crossed
+
+
+def _target(r: list | None, value: float | None) -> float | None:
+    """Smallest sensible fix: aim just inside the good range from the side that was violated,
+    not its middle. Middle-of-range targets overshoot (e.g. a floaty fall becomes a yanked-down fall)."""
+    if not r:
+        return None
+    lo, hi = r
+    if value is None or lo <= value <= hi:
+        return _mid(r)
+    span = hi - lo
+    return lo + INSIDE * span if value < lo else hi - INSIDE * span
 
 
 def _is_time_like(name: str) -> bool:
@@ -89,8 +110,20 @@ class Knobs:
             cands = [p for p in self.props if r.search(p["name"]) and not p["name"].startswith("_")]
             if cands:
                 cands.sort(key=lambda p: (not p.get("exported"), len(p["name"])))
-                return cands[0]
+                return self._effective(cands[0])
         return None
+
+    def _effective(self, p: dict) -> dict:
+        """If the player scene overrides an exported value, that's the value the game uses —
+        and the place to edit."""
+        scene = self.player.get("scene")
+        node_path = self.player.get("node") or "."
+        node = self.g.node(f"node:{scene}::{node_path}") if scene else None
+        overrides = ((node or {}).get("props") or {}).get("props") or {}
+        if p["name"] in overrides and not isinstance(overrides[p["name"]], dict):
+            return {**p, "default": overrides[p["name"]], "file": scene, "line": (node or {}).get("props", {}).get("line"),
+                    "scene_node": node_path, "script_default": p.get("default")}
+        return p
 
     def node_prop(self, types: tuple[str, ...], prop: str) -> dict | None:
         """A built-in property on a node of `types` inside the player scene (e.g. Camera2D smoothing)."""
@@ -108,15 +141,23 @@ def _prop_sugg(p: dict, proposed: Any, why: str, effect: str = "") -> dict:
     cur = p.get("default")
     if isinstance(proposed, float):
         proposed = round(proposed, 4)
-    return {"kind": "property", "id": p["id"], "property": p["name"], "file": p.get("file"), "line": p.get("line"),
-            "current": cur, "proposed": proposed, "why": why, "predicted_effect": effect}
+    out = {"kind": "property", "id": p["id"], "property": p["name"], "file": p.get("file"), "line": p.get("line"),
+           "current": cur, "proposed": proposed, "why": why, "predicted_effect": effect}
+    if p.get("scene_node"):
+        out["scene_node"] = p["scene_node"]
+    return out
+
+
+EXPONENTS = {"inverse": -1.0, "proportional": 1.0}
 
 
 def _scale(p: dict, ratio: float, why: str, effect: str = "", as_int: bool = False,
-           model: str | None = None, metric_value: float | None = None) -> dict:
+           model: str | None = None, metric_value: float | None = None, exponent: float | None = None) -> dict:
+    """metric ∝ knob^exponent (model="inverse" is -1, "proportional" is 1)."""
     out = _scale_raw(p, ratio, why, effect, as_int)
-    if model and _num(out.get("proposed")) is not None and _num(out.get("current")):
-        out["model"] = model
+    exp = exponent if exponent is not None else EXPONENTS.get(model or "")
+    if exp is not None and _num(out.get("proposed")) is not None and _num(out.get("current")):
+        out["exponent"] = exp
         out["metric_value"] = metric_value
     return out
 
@@ -181,7 +222,7 @@ def suggest(g: Graph, profile: dict, finding: dict, measured: dict[str, dict], r
     v = finding["value"]
     direction = finding.get("direction")
     rng = ranges.get(m, {})
-    target = _mid(rng.get("good"))
+    target = _target(rng.get("good"), v if isinstance(v, (int, float)) else None)
     knobs = Knobs(g, profile)
     out: list[dict] = []
 
@@ -191,16 +232,20 @@ def suggest(g: Graph, profile: dict, finding: dict, measured: dict[str, dict], r
         if t and h:
             t_rng = ranges.get("jump.time_to_apex", {}).get("good")
             h_rng = ranges.get("jump.height_max", {}).get("good")
-            t_star = t if not t_rng or t_rng[0] <= t <= t_rng[1] else _mid(t_rng)
-            h_star = h if not h_rng or h_rng[0] <= h <= h_rng[1] else _mid(h_rng)
+            t_star = t if not t_rng or t_rng[0] <= t <= t_rng[1] else _target(t_rng, t)
+            h_star = h if not h_rng or h_rng[0] <= h <= h_rng[1] else _target(h_rng, h)
             v_ratio = (h_star / h) * (t / t_star)
             g_ratio = (h_star / h) * (t / t_star) ** 2
             effect = f"time_to_apex {t:.2f}s → {t_star:.2f}s, height {h:.2f}H → {h_star:.2f}H"
             jv, gr = knobs.find("jump_velocity"), knobs.find("gravity")
+            # velocity and gravity are coupled (h ∝ v²/g): `couple` lets propose cap them together
+            couple = {"group": "jump_arc", "v_ratio": v_ratio, "g_ratio": g_ratio}
             if jv:
-                out.append(_scale(jv, v_ratio, "constant-gravity jump model (v' = v·(h*/h)·(t/t*))", effect))
+                out.append({**_scale(jv, v_ratio, "constant-gravity jump model (v' = v·(h*/h)·(t/t*))", effect),
+                            "couple": {**couple, "role": "v"}})
             if gr:
-                out.append(_scale(gr, g_ratio, "constant-gravity jump model (g' = g·(h*/h)·(t/t*)²)", effect))
+                out.append({**_scale(gr, g_ratio, "constant-gravity jump model (g' = g·(h*/h)·(t/t*)²)", effect),
+                            "couple": {**couple, "role": "g"}})
             elif jv:
                 proj = g.node("project")
                 key = "gravity_3d" if profile.get("dims") == "3d" else "gravity_2d"
@@ -209,15 +254,26 @@ def suggest(g: Graph, profile: dict, finding: dict, measured: dict[str, dict], r
                 out.append({"kind": "setting", "setting": setting, "current": cur,
                             "proposed": round(cur * g_ratio, 3) if isinstance(cur, (int, float)) else f"multiply by {g_ratio:.2f}",
                             "why": "no gravity property on the player; it likely uses the project gravity (affects every body — a per-player gravity property is safer)",
-                            "predicted_effect": effect})
+                            "predicted_effect": effect, "couple": {**couple, "role": "g"}})
             if not jv and not gr:
                 out.append(_hint(f"couldn't find jump velocity / gravity properties; scale jump velocity by {v_ratio:.2f} and gravity by {g_ratio:.2f}"))
     elif m == "jump.fall_rise_ratio":
         k = knobs.find("fall_multiplier")
         if k and v and target:
-            out.append(_scale(k, (target / v) ** 2, "ratio = sqrt(g_fall/g_rise)", f"fall/rise {v:.2f} → {target:.2f}"))
+            out.append(_scale(k, (target / v) ** 2, "ratio = sqrt(g_fall/g_rise)", f"fall/rise {v:.2f} → {target:.2f}",
+                              exponent=0.5, metric_value=v))
         else:
-            out.append(_pattern("fall_multiplier", f"falls take as long as rises (ratio {v}); apply ~{(target or 1.6) ** 2:.1f}x gravity while falling"))
+            out.append(_pattern("fall_multiplier", f"falls take as long as rises (ratio {v}); apply ~{(target or 1.3) ** 2:.1f}x gravity while falling"))
+    elif m == "jump.fall_time":
+        k = knobs.find("fall_multiplier")
+        if k and v and target:
+            # same drop height: fall time ∝ 1/sqrt(fall gravity)
+            out.append(_scale(k, (v / target) ** 2, "fall time ∝ 1/sqrt(fall gravity) for the same height",
+                              f"fall {v:.2f}s → {target:.2f}s", exponent=-0.5, metric_value=v))
+        elif direction == "high":
+            out.append(_pattern("fall_multiplier", f"the fall takes {v}s; apply more gravity while falling"))
+        else:
+            out.append(_hint("the fall is very short: gravity while falling is too strong; lower it (or the overall gravity)"))
     elif m in ("jump.coyote_frames", "jump.buffer_frames"):
         role = "coyote" if m == "jump.coyote_frames" else "buffer"
         k = knobs.find(role)
@@ -250,6 +306,16 @@ def suggest(g: Graph, profile: dict, finding: dict, measured: dict[str, dict], r
         worst = (finding.get("details") or {}).get("worst")
         out.append(_hint("something delays the response: an await/timer, animation-driven movement, or input read in _process and applied next physics tick",
                          query=f"gamefeel graph query who-reads {worst}" if worst else None))
+    elif m == "impact.feedback":
+        missing = (finding.get("details") or {}).get("missing") or []
+        for role, channel in (("hitstop", "hitstop"), ("shake", "shake")):
+            k = knobs.find(role)
+            if channel in missing and k:
+                z = _from_zero(k, role, f"turn on {channel}")
+                if z:
+                    out.append(z)
+        out.append(_pattern("feedback", f"the hit gets {v} reaction(s); missing: {', '.join(missing) or '—'}. "
+                            "Add at least a flash plus one of shake / sound / hitstop"))
     elif m == "impact.hitstop_frames":
         k = knobs.find("hitstop")
         if k and target:
@@ -294,7 +360,11 @@ def suggest(g: Graph, profile: dict, finding: dict, measured: dict[str, dict], r
         else:
             out.append(_hint(f"no {role.replace('_', ' ')} property found; check the attack state/animation timings"))
     elif m == "move.diagonal_ratio":
-        out.append(_pattern("diagonal", "diagonal input isn't normalized; use Input.get_vector() or .normalized() / .limit_length(1.0)"))
+        k = knobs.find("normalize")
+        if k and k.get("default") is False and direction == "high":
+            out.append(_prop_sugg(k, True, "the game already has a switch for normalizing diagonal input", "diagonal ratio → 1.0"))
+        else:
+            out.append(_pattern("diagonal", "diagonal input isn't normalized; use Input.get_vector() or .normalized() / .limit_length(1.0)"))
     elif m in ("dash.distance", "dash.duration_frames", "dash.cooldown_frames"):
         role = {"dash.distance": "dash_speed", "dash.duration_frames": "dash_time", "dash.cooldown_frames": "dash_cooldown"}[m]
         if m == "dash.distance":

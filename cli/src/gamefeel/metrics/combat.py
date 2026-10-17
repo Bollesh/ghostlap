@@ -183,3 +183,57 @@ def hp_lost(pd: ProbeData) -> MetricValue:
             return MetricValue(total, "count", details={"prop": k, "hits": len([d for d in drops if d[0] <= window])},
                                evidence={"probe": pd.id, "run": r.name})
     return none("count", "no tracked health property decreased")
+
+
+HURT_ANIM = ("hurt", "hit", "damage", "pain", "stun", "ouch")
+
+
+def _carry(run: Run, key: str) -> dict[int, object]:
+    """Per-frame value of a key that the sampler only writes when it changes."""
+    out: dict[int, object] = {}
+    cur = None
+    for s in run.frames:
+        if key in s:
+            cur = s[key]
+        out[s["f"]] = cur
+    return out
+
+
+@metric("impact.feedback", "channels", "How many distinct reactions a hit gets within 0.75 s: flash, blink, camera shake, hitstop, sound, particles, hurt animation.")
+def feedback(pd: ProbeData) -> MetricValue:
+    hit = _first_hit(pd)
+    if hit is None:
+        return none("channels", "the player was never hit — check profile.hazard and that it damages the player")
+    r, h = hit
+    end = h + int(r.fps * 0.75)
+    window = [s for s in r.frames if h - 1 <= s["f"] <= end]
+    channels: dict[str, str] = {}
+
+    vz = _carry(r, "vz")
+    base = vz.get(h - 1) or vz.get(h)
+    if base:
+        for s in window:
+            cur = vz.get(s["f"])
+            if not cur or len(cur) != len(base):
+                continue
+            for a, b in zip(base, cur):
+                if max(abs(a[i] - b[i]) for i in range(3)) > 0.15:
+                    channels.setdefault("flash", f"colour change at frame {s['f']}")
+                if (a[4] and not b[4]) or (a[3] - b[3] > 0.4):
+                    channels.setdefault("blink", f"hidden/transparent at frame {s['f']}")
+    if any(s.get("co") and math.hypot(*s["co"][:2]) > 0.5 for s in window):
+        channels["shake"] = "camera offset moved"
+    frozen = [e for e in r.process if h - 1 <= int(e[3]) <= end and (e[1] < 0.95 or e[2])]
+    if frozen:
+        channels["hitstop"] = f"{len(frozen)} frozen frames"
+    for key, name in (("snd", "sound"), ("ptc", "particles")):
+        series = _carry(r, key)
+        before = series.get(h - 1) or 0
+        if any((series.get(s["f"]) or 0) > before for s in window):
+            channels[name] = f"{key} count rose after the hit"
+    if any(any(w in (s.get("a") or "").lower() for w in HURT_ANIM) for s in window):
+        channels["hurt animation"] = "a hurt/hit animation played"
+    missing = [c for c in ("flash", "blink", "shake", "hitstop", "sound", "particles", "hurt animation") if c not in channels]
+    return MetricValue(len(channels), "channels", details={"channels": channels, "missing": missing},
+                       evidence={"probe": pd.id, "run": r.name, "frames": [h, end]},
+                       note="" if channels else "nothing visibly or audibly reacts to the hit")

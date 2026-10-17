@@ -35,4 +35,5 @@ exclude = ["**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["cli/tests"]
-markers = ["godot: needs a Godot 4 binary on PATH (or GAMEFEEL_GODOT)"]
+markers = ["godot: needs a Godot 4 binary on PATH (or GAMEFEEL_GODOT)",
+           "render: needs Godot, ffmpeg and a display (or xvfb-run) to record clips"]

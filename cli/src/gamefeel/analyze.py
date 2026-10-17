@@ -19,9 +19,10 @@ from .graph.store import Graph
 from .metrics import REGISTRY, load_probe_data
 from .packs.loader import load_packs, load_ranges, merged_feel
 from .project import Project
+from .kinds import in_scope
 from .suggest import suggest
 
-SEVERITY_ORDER = {"error": 0, "warn": 1, "assert_failed": 0, "accepted": 2, "ok": 3, "info": 4, "not_measured": 5}
+SEVERITY_ORDER = {"error": 0, "warn": 1, "assert_failed": 0, "accepted": 2, "ok": 3, "style": 4, "info": 5, "not_measured": 6}
 
 
 def classify(value: Any, rng: dict | None) -> tuple[str, str | None]:
@@ -94,6 +95,11 @@ def analyze(project: Project, run_dir: Path, profile: dict) -> dict:
         if a and e["value"] is not None and (("min" in a and e["value"] < a["min"]) or ("max" in a and e["value"] > a["max"])):
             f["severity"] = "assert_failed"
             f["feel"] = f["feel"] or "probe assertion failed"
+        if f["severity"] in ("warn", "error") and not in_scope(m, profile.get("tune")):
+            # motion character: describe it against the style, don't call it a problem
+            f["style_note"] = f"{f['severity']} against the '{style}' style ({f.get('feel') or direction})"
+            f["original_severity"] = f["severity"]
+            f["severity"] = "style"
         if m in accepted and f["severity"] in ("warn", "error", "assert_failed"):
             f["accepted_reason"] = accepted[m]
             f["original_severity"] = f["severity"]
@@ -159,19 +165,20 @@ def _group_root_causes(findings: list[dict]) -> None:
 
 
 def _predict(s: dict, new: float) -> float | None:
+    """metric ∝ knob^exponent."""
     cur = s.get("current")
     mv = s.get("metric_value")
-    if not isinstance(cur, (int, float)) or not cur or mv is None:
+    exp = s.get("exponent")
+    if exp is None and s.get("model") in ("inverse", "proportional"):
+        exp = -1.0 if s["model"] == "inverse" else 1.0
+    if not isinstance(cur, (int, float)) or not cur or mv is None or exp is None or not new or (new / cur) <= 0:
         return None
-    if s.get("model") == "inverse":
-        return mv * cur / new
-    if s.get("model") == "proportional":
-        return mv * new / cur
-    return None
+    return mv * (new / cur) ** exp
 
 
 def _combine(pairs: list[tuple[dict, dict]]) -> None:
-    modelled = [(f, s) for f, s in pairs if s.get("model") and isinstance(s.get("proposed"), (int, float))]
+    modelled = [(f, s) for f, s in pairs if (s.get("exponent") is not None or s.get("model"))
+                and isinstance(s.get("proposed"), (int, float))]
     if len(modelled) < 2:
         return
     import math
@@ -210,7 +217,7 @@ def _fmt(v: Any) -> str:
     return f"{v:.3g}"
 
 
-ICON = {"error": "❌", "assert_failed": "❌", "warn": "⚠️", "ok": "✅", "accepted": "☑️", "info": "ℹ️", "not_measured": "—"}
+ICON = {"error": "❌", "assert_failed": "❌", "warn": "⚠️", "ok": "✅", "accepted": "☑️", "style": "🎨", "info": "ℹ️", "not_measured": "—"}
 
 
 def render_markdown(r: dict) -> str:
@@ -244,7 +251,18 @@ def render_markdown(r: dict) -> str:
             for s in f.get("suggestions", []):
                 lines.append("- " + _fmt_sugg(s))
             lines.append("")
-    rest = [f for f in r["findings"] if f["severity"] not in ("error", "warn", "assert_failed")]
+    styled = [f for f in r["findings"] if f["severity"] == "style"]
+    if styled:
+        lines += ["## Motion character (style, not problems)", "",
+                  "These describe how the game moves. They're outside this style's reference range, which is a matter "
+                  "of taste: momentum-heavy movement is a valid choice. They're only changed if you want a different feel "
+                  "(`tune: all` in profile.yaml, or `gamefeel propose --scope all`).", "",
+                  "| metric | value | style reference | reads as |", "|---|---|---|---|"]
+        for f in styled:
+            rng = f"{_fmt(f['range'][0])}–{_fmt(f['range'][1])}" if f.get("range") else ""
+            lines.append(f"| `{f['metric']}` | {_fmt(f['value'])} {f['unit']} | {rng} | {f.get('feel') or ''} |")
+        lines.append("")
+    rest = [f for f in r["findings"] if f["severity"] not in ("error", "warn", "assert_failed", "style")]
     if rest:
         lines += ["## All metrics", "", "| | metric | value | good range | probe | note |", "|---|---|---|---|---|---|"]
         for f in rest + problems:
@@ -252,6 +270,12 @@ def render_markdown(r: dict) -> str:
             note = f.get("accepted_reason") or f.get("note") or ""
             lines.append(f"| {ICON[f['severity']]} | `{f['metric']}` | {_fmt(f['value'])} {f['unit'] if f['value'] is not None else ''} | {rng} | {f['probe']} | {note} |")
         lines.append("")
+    if problems:
+        lines += ["## Next", "",
+                  "The suggestions above are **predictions** from simple models. Verify them before changing anything:",
+                  "`gamefeel propose` applies them to a scratch copy, re-measures until clean, and reports what actually "
+                  "changed; `gamefeel clip` shows it next to the current game. A clean report is not proof it feels right — "
+                  "look at the clip, and record what still feels off with `gamefeel feedback \"...\"`.", ""]
     issues = [p for p in r["probes"] if p["errors"] or p["script_errors"] or p["ok_runs"] < p["runs"]]
     if issues or r.get("runner_errors") or r.get("skipped_probes"):
         lines += ["## Probe health", ""]
