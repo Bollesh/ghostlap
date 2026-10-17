@@ -56,9 +56,10 @@ class Bridge:
     @classmethod
     def launch(cls, godot: str, project_dir: Path, scene: str, session_dir: Path, *, seed: int = 0,
                physics_tps: int = 60, display: str = "headless", profile: dict | None = None,
-               timeout: float = 60.0, extra_args: list[str] | None = None) -> "Bridge":
+               timeout: float = 60.0, extra_args: list[str] | None = None, shots: dict | None = None) -> "Bridge":
         """display: "headless" (fastest, no screenshots), "window" (visible; desktop input is
-        ignored), or "offscreen" (xvfb-run when available, else a window)."""
+        ignored), or "offscreen" (xvfb-run when available, else a window). shots: capture
+        settings from frame 0 on ({every, keep, on, width}, see shots.gd)."""
         session_dir = Path(session_dir).resolve()
         session_dir.mkdir(parents=True, exist_ok=True)
         for stale in ("bridge.json", "bridge_error.txt"):
@@ -74,6 +75,8 @@ class Bridge:
         cmd += ["--path", str(Path(project_dir).resolve()), "--fixed-fps", str(physics_tps),
                 "--script", str(addon_dir() / "play" / "bridge.gd"), *(extra_args or []), "--",
                 f"--session={session_dir}", f"--scene={scene}", f"--seed={seed}"]
+        if shots is not None:
+            cmd.append("--shots=" + json.dumps(shots, separators=(",", ":")))
         if profile is not None:
             (session_dir / "profile.json").write_text(json.dumps(profile, indent=1))
             cmd.append(f"--profile={session_dir / 'profile.json'}")
@@ -199,8 +202,9 @@ class Bridge:
         """opts: radius (player heights, for `near`), map_w / map_h (cells), shot_width (px)."""
         return self.request("look", views=views or [], shot=shot, **opts)["result"]
 
-    def shot(self, width: int = 960) -> dict:
-        return self.request("shot", width=width)["result"]
+    def shot(self, width: int = -1, why: str = "requested") -> dict:
+        """width -1: the session's shots.width."""
+        return self.request("shot", width=width, why=why)["result"]
 
     def step(self, frames: int, inputs: list[dict] | None = None, timeout: float | None = None) -> dict:
         """Without a timeout, waits as long as frames keep advancing (see BridgeHang)."""

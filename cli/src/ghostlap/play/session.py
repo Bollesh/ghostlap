@@ -4,9 +4,10 @@ State lives in .ghostlap/play/<id>/ so every `ghostlap play …` call is a fresh
 
     session.json   goal, start, mode, budget and its use, held inputs, verdict
     inputs.jsonl   the input line: {"f": frame the game first sees it, "action"|"key"|"mouse": …, "pressed": …}
-    events.jsonl   notes, incidents, eval writes, refusals, the end
+    events.jsonl   notes, incidents, shots and shot hints, shot reads, eval writes, refusals, the end
     last_look.json views last shown, so `step` can collapse what didn't change
     bridge.json    port/token/pid of the running Godot (written by bridge.gd)
+    shots/         f<frame>.png captures; keep.txt lists the ones rolling rotation must keep
 
 .ghostlap/play/active names the session commands act on by default.
 """
@@ -22,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from ..project import GhostlapError, Project
+from . import config as cfgmod
 from .bridge_client import Bridge, BridgeError, BridgeHang
 
 DEFAULT_BUDGET = {"frames": 36000, "commands": 120, "shots": 15}
@@ -42,12 +44,13 @@ def load_goal(path: Path) -> dict:
         raise GhostlapError(f"cannot read goal {path}: {e}") from e
     if not isinstance(goal, dict) or not goal.get("goal"):
         raise GhostlapError(f"{path}: a goal file needs at least `goal: <name>` (see design §3.1)")
-    unknown = set(goal) - {"goal", "describe", "start", "success", "fail_if", "budget", "constraints"}
+    unknown = set(goal) - {"goal", "describe", "start", "success", "fail_if", "budget", "constraints", "shots"}
     if unknown:
         raise GhostlapError(f"{path}: unknown keys {sorted(unknown)}")
     bad = set(goal.get("budget") or {}) - set(DEFAULT_BUDGET)
     if bad:
         raise GhostlapError(f"{path}: unknown budget keys {sorted(bad)} (use {sorted(DEFAULT_BUDGET)})")
+    cfgmod.from_goal(goal.get("shots"), str(path))   # validate now, not at start
     return goal
 
 
@@ -110,6 +113,34 @@ def _hkey(kind: str, name: str) -> str:
     return f"{kind}:{name}"
 
 
+# ------------------------------------------------------------------ shot hints
+
+HINT_ORDER = ["first_look", "scene_changed", "repeat_death", "expectation_missed", "ui_without_text", "unclassified_nearby"]
+UNKNOWN_GAP = 300   # frames between unclassified_nearby hints, unless the scene changed
+
+
+def unknown_keys(views: dict) -> list[str]:
+    """Things the text state couldn't classify: `?` cells in map/grid (keyed by world cell, so the
+    same thing seen from elsewhere isn't new) and `near` entries of kind unknown."""
+    out = []
+    for name, v in views.items():
+        if name == "near" and isinstance(v, list):
+            out += [f"near:{e['name']}" for e in v if isinstance(e, dict) and e.get("kind") == "unknown"]
+        elif isinstance(v, dict) and isinstance(v.get("rows"), list):
+            cell = v.get("cell_px") or [1, 1]
+            origin = v.get("origin") or [0, 0]
+            ocell = v.get("origin_cell")
+            for y, row in enumerate(v["rows"]):
+                for x, ch in enumerate(row):
+                    if ch != "?":
+                        continue
+                    if ocell is not None:
+                        out.append(f"{name}:{ocell[0] + x},{ocell[1] + y}")
+                    elif len(cell) == 2 and len(origin) == 2:
+                        out.append(f"{name}:{round(origin[0] / cell[0]) + x},{round(origin[1] / cell[1]) + y}")
+    return out
+
+
 # ------------------------------------------------------------------ session
 
 class Session:
@@ -123,7 +154,9 @@ class Session:
 
     @classmethod
     def start(cls, project: Project, godot: str, *, goal: dict | None, scene: str | None, display: str,
-              seed: int, profile: dict | None, budget: dict | None = None) -> tuple["Session", dict]:
+              seed: int, profile: dict | None, budget: dict | None = None,
+              flags: dict | None = None) -> tuple["Session", dict]:
+        """flags: settings from `play start` options (config keys, e.g. from --rolling-shots)."""
         active = cls.active(project, required=False)
         if active and active.alive():
             raise GhostlapError(f"session {active.id} is still running — `ghostlap play end` or `ghostlap play kill` it first")
@@ -146,21 +179,28 @@ class Session:
         d = play_dir(project) / sid
         d.mkdir(parents=True)
         bud = {**DEFAULT_BUDGET, **(goal.get("budget") or {}), **(budget or {})}
+        cfg = cfgmod.resolve([(cfgmod.CFG_FILE, cfgmod.from_cfg(project.root)), ("goal", cfgmod.from_goal(goal.get("shots"))),
+                              ("play start", flags or {})])
         meta = {"id": sid, "goal": goal, "scene": start_scene, "display": display, "seed": seed, "created": time.time(),
                 "frame": 0, "held": [], "pending": [], "budget": bud,
                 "used": {"frames": 0, "commands": 1, "shots": 0, "bytes": 0}, "goal_met_at": None,
-                "cheats": [], "status": "running"}
+                "cheats": [], "status": "running", "config": cfg,
+                "hints": {"unknown": [], "unknown_at": None, "scene": None}}
         (d / "session.json").write_text(json.dumps(meta, indent=1))
         (play_dir(project) / "active").write_text(sid)
         try:
-            bridge = Bridge.launch(godot, project.root, start_scene, d, seed=seed, display=display, profile=profile)
+            bridge = Bridge.launch(godot, project.root, start_scene, d, seed=seed, display=display, profile=profile,
+                                   shots=cfgmod.bridge_shots(cfg))
         except BridgeError:
             meta["status"] = "failed_to_start"
             (d / "session.json").write_text(json.dumps(meta, indent=1))
             (play_dir(project) / "active").unlink(missing_ok=True)
             raise
         s = cls(project, sid)
-        s.meta.update({"godot": bridge.info.get("godot"), "physics_tps": bridge.info.get("physics_tps")})
+        s.meta.update({"godot": bridge.info.get("godot"), "physics_tps": bridge.info.get("physics_tps"),
+                       "headless": bool(bridge.info.get("headless"))})
+        if s.meta["headless"]:
+            s.log("shots_unavailable", why="headless: no renderer, so no screenshots or shot hints")
         if goal.get("success"):
             try:
                 cfg = bridge.request("config", goal=goal["success"])["result"]
@@ -265,15 +305,101 @@ class Session:
     # ---------------------------------------------------------- observe
 
     def look_raw(self, views: list[str] | None = None, shot: bool = False, **opts) -> dict:
+        """Look with the session's look.* settings for whatever isn't given."""
+        cfg = self.meta.get("config") or {}
+        views = views or cfgmod.value(cfg, "look.views")
+        for opt, key in (("radius", "look.radius"), ("map_w", "look.map_w"), ("map_h", "look.map_h")):
+            opts.setdefault(opt, cfgmod.value(cfg, key))
         res = self.bridge.look(views=views, shot=shot, **opts)
         self._sync(res)
         return res
+
+    def config(self) -> dict:
+        return self.meta.get("config") or cfgmod.resolve([])
 
     def _sync(self, res: dict) -> None:
         self.meta["frame"] = res["f"]
         if res.get("goal_met_at", -1) >= 0 and self.meta.get("goal_met_at") is None:
             self.meta["goal_met_at"] = res["goal_met_at"]
             self.log("goal_met", at=res["goal_met_at"])
+        for sh in res.get("new_shots") or []:
+            self._event(sh["f"], "shot", path=self.rel(sh["path"]), why=sh["why"])
+        for ui in res.get("new_ui") or []:
+            self._event(ui["f"], "ui_shown", **{k: (self.rel(v) if k == "shot" else v) for k, v in ui.items() if k != "f"})
+
+    def rel(self, path: str) -> str:
+        p = Path(path)
+        return str(p.relative_to(self.dir)) if p.is_relative_to(self.dir) else str(p)
+
+    def _event(self, f: int, kind: str, **data) -> None:
+        with open(self.dir / "events.jsonl", "a") as fh:
+            fh.write(json.dumps({"f": f, "kind": kind, **data}) + "\n")
+
+    def pin_shot(self, path: Path) -> None:
+        """Rolling rotation never deletes a shot that was cited or read."""
+        keep = self.dir / "shots" / "keep.txt"
+        if keep.parent.is_dir():
+            with open(keep, "a") as fh:
+                fh.write(Path(path).name + "\n")
+
+    # ---------------------------------------------------------- shot hints (design §3.3.1)
+
+    def shot_hint(self, responses: list[dict], views: dict | None = None, until: dict | None = None) -> dict | None:
+        """The one screenshot Claude should read before acting, when the text state is likely
+        wrong or incomplete: {reason, path, why, also}. `responses` are this command's bridge
+        results (a step and the look after it); `views` the full (uncollapsed) views shown."""
+        if self.meta.get("headless"):
+            return None
+        h = self.meta.setdefault("hints", {"unknown": [], "unknown_at": None, "scene": None})
+        found: list[tuple[str, str | None, str]] = []
+        shots = [sh for r in responses for sh in r.get("new_shots") or []]
+
+        def shot_for(trigger: str) -> str | None:
+            return next((sh["path"] for sh in reversed(shots) if trigger in sh["why"]), None)
+
+        last = responses[-1]
+        if last["f"] == 0 and h.get("scene") is None:
+            found.append(("first_look", shot_for("start"), "the first frame: see the art style and layout once"))
+        elif h.get("scene") not in (None, last.get("scene")):
+            found.append(("scene_changed", shot_for("scene_change"), f"now in {last.get('scene')}"))
+        scene_changed = h.get("scene") != last.get("scene")
+        h["scene"] = last.get("scene")
+        for r in responses:
+            for inc in r.get("incidents") or []:
+                if inc["type"] == "death" and "repeat_of" in inc:
+                    found.append(("repeat_death", inc.get("shot"), f"died again where it died at f={inc['repeat_of']}"))
+                elif inc["type"] == "stuck":
+                    found.append(("expectation_missed", inc.get("shot"), "stuck: movement held but the player isn't moving"))
+            for ui in r.get("new_ui") or []:
+                if ui.get("textless"):
+                    found.append(("ui_without_text", ui.get("shot"), f"{ui['node']} appeared with no readable text"))
+        if until and until.get("reason") == "max":
+            found.append(("expectation_missed", None, "until reached --max without its condition"))
+        unknown = [k for k in unknown_keys(views or {}) if k not in h["unknown"]]
+        if unknown and (scene_changed or h.get("unknown_at") is None or last["f"] - h["unknown_at"] >= UNKNOWN_GAP):
+            h["unknown"] = sorted(set(h["unknown"]) | set(unknown))[-500:]
+            h["unknown_at"] = last["f"]
+            found.append(("unclassified_nearby", None, f"{len(unknown)} unclassified thing(s) nearby: " + ", ".join(unknown[:4])))
+        if not found:
+            return None
+        found.sort(key=lambda x: HINT_ORDER.index(x[0]))
+        reason, path, why = found[0]
+        if path is None:
+            sh = self.bridge.shot(why="hint")
+            self._sync_shot(sh)
+            path = sh.get("path")
+            if path is None:
+                return None
+        hint = {"reason": reason, "path": path, "why": why}
+        also = sorted({r for r, _, _ in found[1:] if r != reason}, key=HINT_ORDER.index)
+        if also:
+            hint["also"] = also
+        self._event(last["f"], "shot_hint", reason=reason, path=self.rel(path), why=why)
+        return hint
+
+    def _sync_shot(self, sh: dict) -> None:
+        for x in sh.get("new_shots") or []:
+            self._event(x["f"], "shot", path=self.rel(x["path"]), why=x["why"])
 
     def collapse(self, views: dict) -> dict:
         """Replace views identical to the last ones shown with "unchanged"."""

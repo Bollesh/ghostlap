@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
+import sys
 from pathlib import Path
 
 from ..project import GhostlapError, Project, find_godot, find_project
+from . import config as cfgmod
 from .bridge_client import Bridge, BridgeError
 from .session import Session, load_goal, play_dir
 
@@ -57,6 +60,13 @@ def header(s: Session, res: dict, ran: int | None = None) -> str:
     return " · ".join(parts)
 
 
+def hint_line(hint: dict | None) -> list[str]:
+    if not hint:
+        return []
+    also = f" (also: {', '.join(hint['also'])})" if hint.get("also") else ""
+    return [f"SHOT HINT {hint['reason']}: read {hint['path']} before acting — {hint['why']}{also}"]
+
+
 def _emit(args, s: Session | None, text: str, data: dict) -> None:
     out = json.dumps(data, indent=1, default=str) if args.json else text
     if s is not None:
@@ -94,10 +104,14 @@ def cmd_start(args, project: Project) -> int:
     goal = load_goal(Path(args.goal)) if args.goal else None
     prof = read_profile(project.profile_path)
     display = args.display or "offscreen"
+    flags = cfgmod.rolling_flag(args.rolling_shots) if args.rolling_shots else {}
     s, res = Session.start(project, godot, goal=goal, scene=args.scene, display=display, seed=args.seed,
-                           profile=bridge_profile(project, prof) if prof else None)
+                           profile=bridge_profile(project, prof) if prof else None, flags=flags)
     look = res
     s.remember(look["views"])
+    hint = _bridge_call(s, lambda: s.shot_hint([look], look["views"]))
+    if hint:
+        look["shot_hint"] = hint
     lines = [f"session {s.id} started ({display}), frozen at frame 0"]
     if goal:
         lines.append(f"goal: {goal['goal']} — {goal.get('describe', '')}".rstrip(" —"))
@@ -106,9 +120,21 @@ def cmd_start(args, project: Project) -> int:
     if prof is None:
         lines.append("note: no .ghostlap/profile.yaml — run `ghostlap scan && ghostlap detect` for player-aware views")
     lines += [incident_line(i) for i in s.meta.get("load_incidents") or []]
-    lines += [header(s, look)] + render_views(look["views"])
+    lines.append(shots_line(s))
+    lines += [header(s, look)] + render_views(look["views"]) + hint_line(hint)
     _emit(args, s, "\n".join(lines), {"session": s.id, "look": look})
     return 0
+
+
+def shots_line(s: Session) -> str:
+    if s.meta.get("headless"):
+        return "screenshots: off (headless: no renderer, no shot hints)"
+    c = s.config()
+    every, keep = cfgmod.value(c, "shots.rolling.every"), cfgmod.value(c, "shots.rolling.keep")
+    on = cfgmod.value(c, "shots.on")
+    rolling = f"every {every} frames, keeping {keep}" if every and keep != 0 else "off"
+    return (f"screenshots: {s.dir / 'shots'} · captured on {', '.join(on) or 'nothing'} · rolling {rolling} "
+            f"(`ghostlap play config` to change)")
 
 
 def cmd_look(args, project: Project) -> int:
@@ -126,8 +152,10 @@ def cmd_look(args, project: Project) -> int:
         lines.append(f"shot: {sh['path']}" if sh.get("path") else f"shot: unavailable ({sh.get('error')})")
         if not sh.get("path"):
             s.meta["used"]["shots"] -= 1
-        else:
-            s.log("shot", path=sh["path"])
+    hint = _bridge_call(s, lambda: s.shot_hint([res], res["views"]))
+    if hint:
+        res["shot_hint"] = hint
+        lines += hint_line(hint)
     _emit(args, s, "\n".join(lines), res)
     return 0
 
@@ -145,9 +173,18 @@ def incident_line(inc: dict) -> str:
 
 def _after_step(args, s: Session, res: dict, ran: int, extra: list[str]) -> None:
     lines = [header(s, res, ran)] + extra + [incident_line(i) for i in res.get("incidents") or []]
+    lines += [f"UI f={u['f']}: {u['node']} appeared" + (f" ({u['text']})" if u.get("text") else " (no text)")
+              for u in res.get("new_ui") or []]
+    responses, views = [res], None
     if not args.quiet:
         look = _bridge_call(s, lambda: s.look_raw())
+        responses.append(look)
+        views = look["views"]
         lines += render_views(s.collapse(look["views"]))
+    hint = _bridge_call(s, lambda: s.shot_hint(responses, views, res.get("until")))
+    if hint:
+        res["shot_hint"] = hint
+        lines += hint_line(hint)
     _emit(args, s, "\n".join(lines), res)
 
 
@@ -211,7 +248,8 @@ def cmd_note(args, project: Project) -> int:
             p = s.dir / p
         if not p.is_file():
             raise GhostlapError(f"--saw {args.saw}: no such screenshot (shots are in {s.dir / 'shots'})")
-        data["saw"] = str(p.relative_to(s.dir)) if p.is_relative_to(s.dir) else str(p)
+        data["saw"] = s.rel(str(p))
+        s.pin_shot(p)
     s.log("note", **data)
     _emit(args, s, f"noted at f={s.meta['frame']}", data)
     return 0
@@ -238,12 +276,19 @@ def cmd_status(args, project: Project) -> int:
     if m.get("incidents"):
         lines.append("incidents: " + ", ".join(f"{k} ×{v}" for k, v in m["incidents"].items()))
     lines.append(f"tokens returned so far: ~{m['used']['bytes'] // 4}")
-    notes = []
+    notes, shots, reads = [], set(), []
     if (s.dir / "events.jsonl").is_file():
         for ln in (s.dir / "events.jsonl").read_text().splitlines():
             e = json.loads(ln)
             if e["kind"] in ("note", "goal_met", "incident", "crashed", "abandoned", "refused", "goal_error"):
                 notes.append(e)
+            elif e["kind"] == "shot":
+                shots.add(e["path"])
+            elif e["kind"] == "shot_read":
+                reads.append(e["reason"])
+    if shots or reads:
+        why = ", ".join(f"{r} ×{reads.count(r)}" for r in sorted(set(reads)))
+        lines.append(f"shots: {len(shots)} captured, {len(reads)} read" + (f" ({why})" if why else ""))
     for e in notes[-12:]:
         if e["kind"] == "incident":
             lines.append("  " + incident_line(e))
@@ -281,10 +326,103 @@ def cmd_end(args, project: Project) -> int:
     if pointer.is_file() and pointer.read_text().strip() == s.id:
         pointer.unlink()
     lines = [f"session {s.id} ended: {args.verdict} — {args.why}",
+             *(["warning: incident shots were off (shots.on), so this fail has no pictures of its incidents"]
+               if args.verdict == "fail" and "incident" not in cfgmod.value(s.config(), "shots.on") else []),
              f"goal met: {'yes, at f=' + str(m['goal_met_at']) if m.get('goal_met_at') is not None else 'no'}",
              f"frames {m['used']['frames']}, commands {m['used']['commands']}, shots {m['used']['shots']}, ~{m['used']['bytes'] // 4} tokens returned",
              f"files: {s.dir}"]
     _emit(args, None, "\n".join(lines), m)
+    return 0
+
+
+def cmd_config(args, project: Project) -> int:
+    """Read the session's settings, or change them from the current frame on."""
+    if not args.set:
+        s = Session.active(project, args.session)
+        _emit(args, None, "\n".join(cfgmod.describe(s.config())), s.config())
+        return 0
+    s = _session(args, project, "config")
+    changes = {}
+    for kv in args.set:
+        key, eq, raw = kv.partition("=")
+        if not eq:
+            raise GhostlapError(f"{kv!r}: use key=value (`ghostlap play config` lists the settings)")
+        changes[key.strip()] = cfgmod.parse(key.strip(), raw)
+    cfg = s.config()
+    for k, v in changes.items():
+        cfg[k] = {"value": v, "source": f"play config at f={s.meta['frame']}"}
+    if any(k.startswith("shots.") for k in changes):
+        _bridge_call(s, lambda: s.bridge.request("config", shots=cfgmod.bridge_shots(cfg)))
+    s.meta["config"] = cfg
+    s.log("config", changes=changes)
+    lines = [f"{k} = {', '.join(v) if isinstance(v, list) else v} from f={s.meta['frame'] + 1} on" for k, v in changes.items()]
+    if "shots.on" in changes and "incident" not in changes["shots.on"]:
+        lines.append("warning: incident shots are off — a fail verdict will have no pictures of its incidents")
+    _emit(args, s, "\n".join(lines), {k: cfg[k] for k in changes})
+    return 0
+
+
+SHOT_PATH = re.compile(r"^(?P<dir>.*[/\\]\.ghostlap[/\\]play[/\\][^/\\]+)[/\\]shots[/\\]f(?P<f>\d+)\.png$")
+
+
+def log_read(path: str) -> dict | None:
+    """Record that Claude read a session screenshot (from the PostToolUse hook on Read): appends
+    {kind: shot_read, f, path, reason} to the session's events.jsonl and keeps the shot from
+    rolling rotation. reason: the hint that pointed at it, else why it was captured."""
+    m = SHOT_PATH.match(str(path))
+    if not m:
+        return None
+    d = Path(m.group("dir"))
+    ev = d / "events.jsonl"
+    if not (d / "session.json").is_file():
+        return None
+    name = Path(path).name
+    hinted, captured = None, None
+    if ev.is_file():
+        for ln in ev.read_text().splitlines():
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            if Path(str(e.get("path", ""))).name != name:
+                continue
+            if e["kind"] == "shot_hint":
+                hinted = e["reason"]
+            elif e["kind"] == "shot":
+                captured = e.get("why") or []   # the last record has every trigger of that frame
+    if hinted:
+        reason = hinted
+    elif captured and "requested" in captured:
+        reason = "requested"
+    elif captured:
+        reason = "auto:" + "+".join(w for w in captured if w != "hint")
+    else:
+        reason = "unprompted"
+    rec = {"f": int(m.group("f")), "kind": "shot_read", "path": f"shots/{name}", "reason": reason}
+    with open(ev, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    if (d / "shots").is_dir():
+        with open(d / "shots" / "keep.txt", "a") as fh:
+            fh.write(name + "\n")
+    return rec
+
+
+def cmd_log_read(args, project: Project | None) -> int:
+    if args.hook:
+        # never fail a Read: any problem here is ignored
+        try:
+            data = json.loads(sys.stdin.read() or "{}")
+            p = Path(str((data.get("tool_input") or {}).get("file_path") or ""))
+            if not p.is_absolute():
+                p = Path(data.get("cwd") or os.getcwd()) / p
+            log_read(str(p))
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+    rec = log_read(str(Path(args.path).resolve()))
+    if rec is None:
+        raise GhostlapError(f"{args.path} is not a play session screenshot (.ghostlap/play/<session>/shots/f<N>.png)")
+    print(f"logged: read {rec['path']} (f={rec['f']}, {rec['reason']})")
     return 0
 
 
@@ -358,6 +496,7 @@ def add_parser(sub, common) -> None:
     d.add_argument("--offscreen", dest="display", action="store_const", const="offscreen", help="xvfb when available (default)")
     d.add_argument("--window", dest="display", action="store_const", const="window", help="a visible window to watch")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--rolling-shots", metavar="EVERY[:KEEP]|off", help="rolling screenshots, e.g. 300:10 (default 600:5)")
     p.set_defaults(play_fn=cmd_start)
 
     p = ps.add_parser("look", parents=[common, sess], help="observe; no time passes")
@@ -399,6 +538,15 @@ def add_parser(sub, common) -> None:
     p.add_argument("--evidence", action="append", help="decisive frames or shots, e.g. f1260")
     p.set_defaults(play_fn=cmd_end)
 
+    p = ps.add_parser("config", parents=[common, sess], help="show settings, or change them live: shots.rolling.every=300")
+    p.add_argument("set", nargs="*", metavar="key=value")
+    p.set_defaults(play_fn=cmd_config)
+
+    p = ps.add_parser("log-read", parents=[common], help="record that a session screenshot was read (the plugin's Read hook)")
+    p.add_argument("path", nargs="?")
+    p.add_argument("--hook", action="store_true", help="read the hook's JSON from stdin; never fails")
+    p.set_defaults(play_fn=cmd_log_read)
+
     p = ps.add_parser("kill", parents=[common, sess], help="kill the session's Godot (--all: every session's)")
     p.add_argument("--all", action="store_true")
     p.set_defaults(play_fn=cmd_kill)
@@ -407,4 +555,6 @@ def add_parser(sub, common) -> None:
 
 
 def run(args) -> int:
+    if args.play_fn is cmd_log_read:
+        return cmd_log_read(args, None)   # the path names its session; no project lookup
     return args.play_fn(args, find_project(args.project))

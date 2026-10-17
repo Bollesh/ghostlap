@@ -3,6 +3,7 @@ extends Node
 
 @export var kind := ""
 @export var at := 30
+@export var target := ""   # show: the node to make visible; change: the scene to go to
 var _n := 0
 
 
@@ -37,3 +38,7 @@ func _physics_process(_delta: float) -> void:
 			player.health = 0
 		"free":
 			player.queue_free()
+		"show":
+			get_node(target).show()
+		"change":
+			get_tree().change_scene_to_file(target)

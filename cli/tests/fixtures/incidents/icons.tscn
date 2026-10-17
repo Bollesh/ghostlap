@@ -1,0 +1,69 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://player.gd" id="1_player"]
+[ext_resource type="Script" path="res://plant.gd" id="2_plant"]
+[ext_resource type="Script" path="res://respawn.gd" id="3_respawn"]
+[ext_resource type="Script" path="res://reload.gd" id="4_reload"]
+
+[sub_resource type="RectangleShape2D" id="Rect_player"]
+size = Vector2(24, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_ground"]
+size = Vector2(2000, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_wall"]
+size = Vector2(40, 400)
+
+[sub_resource type="RectangleShape2D" id="Rect_zone"]
+size = Vector2(40, 40)
+
+[sub_resource type="GradientTexture2D" id="Tex_icon"]
+width = 64
+height = 64
+
+[node name="Icons" type="Node2D"]
+
+[node name="Ground" type="StaticBody2D" parent="."]
+position = Vector2(600, 300)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground"]
+shape = SubResource("Rect_ground")
+
+[node name="Visual" type="Polygon2D" parent="Ground"]
+polygon = PackedVector2Array(-1000, -20, 1000, -20, 1000, 20, -1000, 20)
+
+[node name="Wall" type="StaticBody2D" parent="."]
+position = Vector2(1700, 100)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Wall"]
+shape = SubResource("Rect_wall")
+
+[node name="Player" type="CharacterBody2D" parent="." groups=["player"]]
+position = Vector2(0, 260)
+script = ExtResource("1_player")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Player"]
+shape = SubResource("Rect_player")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Icons" type="HBoxContainer" parent="UI"]
+visible = false
+offset_left = 450.0
+offset_top = 250.0
+offset_right = 650.0
+offset_bottom = 330.0
+
+[node name="Play" type="TextureButton" parent="UI/Icons"]
+layout_mode = 2
+texture_normal = SubResource("Tex_icon")
+
+[node name="Quit" type="TextureButton" parent="UI/Icons"]
+layout_mode = 2
+texture_normal = SubResource("Tex_icon")
+
+[node name="Plant" type="Node" parent="."]
+script = ExtResource("2_plant")
+kind = "show"
+target = "../UI/Icons"
+at = 30

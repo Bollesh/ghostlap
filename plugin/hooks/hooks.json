@@ -1,0 +1,17 @@
+{
+  "description": "ghostlap play: log which session screenshots Claude reads (design §3.3.1)",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); case \"$input\" in *.ghostlap/play/*/shots/f*.png*) printf '%s' \"$input\" | ghostlap play log-read --hook ;; esac; exit 0",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

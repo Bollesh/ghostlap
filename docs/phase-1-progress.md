@@ -1,4 +1,4 @@
-# Phase 1 progress: items 1.1–1.4
+# Phase 1 progress: items 1.1–1.5
 
 Phase 1's goal is "Claude proves level 1 is completable". After items 1.1–1.4, Claude can start a
 Godot game frozen, read it as text, play it from the shell one short command at a time, leave
@@ -27,6 +27,9 @@ ghostlap play end --verdict pass --why "node('Goal').reached became true at f=98
 | Session | `cli/src/ghostlap/play/session.py` | Goal file, budget, held inputs, the input line, events |
 | CLI | `cli/src/ghostlap/play/commands.py` | `ghostlap play start/look/step/until/eval/note/status/end/kill` |
 | Incidents (Godot) | `addons/ghostlap/play/incidents.gd` | Per-frame rules: error, out_of_bounds, player_lost, stuck, death |
+| Shots (Godot) | `addons/ghostlap/play/shots.gd` | Screenshot checkpoints: captures on events, new-UI detection, rolling rotation |
+| Settings | `cli/src/ghostlap/play/config.py` | `play config` keys and where each value came from |
+| Read hook | `plugin/hooks/hooks.json` | Logs which session screenshots Claude reads |
 | Profile | `cli/src/ghostlap/play/profile.py`, `detect/detect.py` | Which node is the player, what kind of game it is, default views |
 
 ## 1.1 — The bridge (spike)
@@ -160,6 +163,38 @@ Each one fires once and re-arms when its condition clears.
   - The hang incident carries the last frame that made progress.
 - **Crash race:** a crashing Godot closes its socket before it exits. The CLI now waits up to 3 s for the exit before deciding, which fixes an occasional generic error instead of a crash incident.
 
+## 1.5 — Screenshot checkpoints
+
+The bridge captures freely; Claude reads a shot only when a response carries a `shot_hint` (design §3.3.1). Capturing costs milliseconds; reading costs about 700 tokens.
+
+**Auto captures** go to `shots/f<frame>.png`, one file per frame, listed in `events.jsonl` with their triggers:
+
+| Trigger | Fires on |
+|---|---|
+| `start` | Frame 0 |
+| `scene_change` | The scene's path changed (a reload is a death, not a change) |
+| `incident` / `death` | Any incident; the shot path is attached to the incident |
+| `success` | The goal's `success` expression became true |
+| `ui` | A new popup, dialog or end screen, shot 15 frames later for fade-ins. A toast or a screen flash doesn't count |
+| `rolling` | Multiples of `every` (600), keeping the last `keep` (5). Shots cited with `--saw` or read by Claude are kept |
+
+**Hints** (one per response, the rest in `also`):
+
+| Hint | When |
+|---|---|
+| `first_look` | Frame 0 |
+| `scene_changed` | The scene changed since the last response |
+| `repeat_death` | A death within 3 heights of an earlier death in the same scene |
+| `expectation_missed` | `until` hit `--max`, or `stuck` fired |
+| `ui_without_text` | New UI with no readable text (icon buttons) |
+| `unclassified_nearby` | A new `?` cell or a `near` entry of kind unknown; at most every 300 frames |
+
+**Settings:** defaults < `ghostlap.cfg` < goal `shots:` < `start --rolling-shots` < `play config`. `play config` alone lists each value and its source. Live changes apply from the next frame.
+
+**Read hook:** `plugin/hooks/hooks.json` runs `ghostlap play log-read --hook` after a Read of a session shot. It appends `{kind: shot_read, f, path, reason}`, where `reason` is the hint that pointed at the shot, else `requested`, else `auto:<triggers>`. `play status` shows the read count.
+
+Other changes: deaths now carry `at` (where the player died) and `repeat_of`. `look` applies the session's `look.*` settings. Step output lists new UI. Headless sessions say "screenshots: off" and give no hints.
+
 ## Engine findings
 
 | Finding | Where | Handling |
@@ -172,6 +207,7 @@ Each one fires once and re-arms when its condition clears.
 | One frame with no `current_scene` during `reload_current_scene()` | 1.3 review | `until` and the goal check skip such frames |
 | `OS.crash()` / a fatal signal prints the message first, then a long C++ backtrace | 1.4 | Crash evidence is a filtered log summary |
 | A rendered window that is hidden or on a locked screen advances very slowly | 1.4 | Hang detection requires a busy CPU in rendered modes |
+| PyYAML (YAML 1.1) reads a bare `on:` key as `true` | 1.5 | The goal loader maps `true` back to `shots.on` |
 
 ## Code review fixes (before committing 1.3)
 
@@ -197,12 +233,12 @@ Each one fires once and re-arms when its condition clears.
 | `test_observe.py` (10) | Every view on fixtures (tile platformer, Sokoban, card battle), screenshot, window == headless, detect's default views |
 | `test_play_cli.py` (6) | The long level from the shell + replay, holds and taps, write guard, budgets, reload, bad goal, RNG calls |
 | `test_incidents.py` (17) | Each planted incident fires (error, crash, hang, out of bounds, player lost, stuck, 3 deaths), an incident ends `until`, a clean run fires none; warnings, no-player games, load errors, error floods and repeated deaths |
+| `test_shots.py` (17) | Each capture trigger and hint on its fixture, none on a flat run, toast/flash ignored, ui settle and flush, rolling rotation with a live change and a pinned shot, settings layers and errors, headless, the real hook command |
 
 ## Not done yet, and known issues
 
 - **Planned for later items:**
-  - screenshot checkpoints and `play config` (1.5);
-  - verdict rules and `report.md` (1.6), since `end` records the verdict but doesn't check it yet;
+  - verdict rules, including the `pre_verdict` hint and `report.md` (1.6), since `end` records the verdict but doesn't check it yet;
   - the replay check and captioned video (1.7);
   - the `playtest` skill (1.8).
 - **Inputs not built yet:** `--axis`, `--aim`, `--look`.
@@ -215,4 +251,5 @@ Each one fires once and re-arms when its condition clears.
   - CI only runs on `main` and PRs, so `phase-1` pushes aren't tested. The last `main` run failed on the 4.3 jobs for an unknown reason (the logs need auth).
   - `test_clip_renders_now_vs_proposal` (feel) takes about 10 minutes locally when its window is hidden. It renders a real window, unlike the play tests.
 - **`trapped` and `softlock`** incidents are phase 2 (2.6); the `perf` signal isn't built.
-- **Next:** item 1.5, screenshot checkpoints, capture config (`play config`) and the shot-read hook.
+- **The Stop hook** (end or explain an open session) is listed with the hooks in design §5 but isn't part of 1.5; it isn't built.
+- **Next:** item 1.6, verdict rules and `report.md`.

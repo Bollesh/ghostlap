@@ -1,7 +1,8 @@
 # ghostlap play bridge: runs the user's game and freezes it between commands.
 #
 #   godot [--headless] --path <project> --fixed-fps <physics_tps> --script <abs>/bridge.gd -- \
-#       --session=<abs dir> --scene=res://level.tscn [--seed=N] [--profile=<abs profile.json>]
+#       --session=<abs dir> --scene=res://level.tscn [--seed=N] [--profile=<abs profile.json>] \
+#       [--shots={"every":600,"keep":5,"on":[...],"width":960}]
 #
 # profile.json (written by the CLI from .ghostlap/profile.yaml): player {scene, node}, dims,
 # track_props, hazard, views (default look views), state_nodes. See observe.gd.
@@ -28,6 +29,7 @@ extends SceneTree
 
 const Observe = preload("observe.gd")
 const Incidents = preload("incidents.gd")
+const Shots = preload("shots.gd")
 
 var bridge: Node
 
@@ -85,6 +87,7 @@ class Bridge extends Node:
 	var until_result := {}
 	var incidents: RefCounted
 	var cmd_incidents: Array = []       # incidents during the running step/until
+	var shots: RefCounted
 	var _progress_ms := 0
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
@@ -105,6 +108,13 @@ class Bridge extends Node:
 		observe = Observe.new(tree, prof)
 		ctx = ExprContext.new(tree, observe)
 		incidents = Incidents.new(tree, observe, prof, session_dir.path_join("godot.log"))
+		shots = Shots.new(tree, session_dir, headless)
+		if args.has("shots"):
+			var sc = JSON.parse_string(str(args["shots"]))
+			var bad: String = shots.set_config(sc) if sc is Dictionary else "not a JSON object"
+			if bad != "":
+				_fatal("--shots: " + bad)
+				return
 		if not headless:
 			_detach_window_from_desktop_input()
 		if server.listen(0, "127.0.0.1") != OK:
@@ -143,8 +153,10 @@ class Bridge extends Node:
 		else:
 			frame += 1
 		hashes.append(_hash())
-		_check_incidents()
+		var new_incs := _check_incidents()
+		var met_before := goal_met_at
 		_check_goal()
+		shots.tick(frame, new_incs, goal_met_at >= 0 and met_before < 0)
 		if frames_left > 0:
 			frames_left -= 1
 			if Time.get_ticks_msec() - _progress_ms >= PROGRESS_MS:
@@ -153,7 +165,9 @@ class Bridge extends Node:
 				_check_until()
 		if frames_left == 0:
 			if pending_peer != null:
+				shots.flush(frame)
 				var res := _look()
+				res.merge(_news(), true)
 				res["incidents"] = cmd_incidents
 				cmd_incidents = []
 				if until_expr != null:
@@ -242,10 +256,14 @@ class Bridge extends Node:
 					views = observe.default_views()
 				res["views"] = observe.look(views, a)
 				if a.get("shot", false):
-					res["shot"] = _shot(int(a.get("shot_width", 960)))
+					res["shot"] = shots.capture(frame, ["requested"], int(a.get("shot_width", -1)))
+				res.merge(_news(), true)
 				_reply(peer, id, {"ok": true, "result": res})
 			"shot":
-				_reply(peer, id, {"ok": true, "result": _shot(int(a.get("width", 960)))})
+				# `why`: requested (look --shot) or hint (a shot_hint the CLI attaches)
+				var sh: Dictionary = shots.capture(frame, [str(a.get("why", "requested"))], int(a.get("width", -1)))
+				sh.merge(_news(), true)
+				_reply(peer, id, {"ok": true, "result": sh})
 			"eval":
 				_reply(peer, id, _eval(str(a.get("expr", "")), bool(a.get("write", false))))
 			"config":
@@ -395,6 +413,11 @@ class Bridge extends Node:
 			"suppressed_errors": incidents.suppressed_errors if incidents != null else 0,
 		}
 
+	## Shots captured and UI that appeared since the last response that carried them.
+	func _news() -> Dictionary:
+		var n: Dictionary = shots.take_news()
+		return {"new_shots": n["shots"], "new_ui": n["ui"]}
+
 	## Positions and velocities of every 2D/3D node in the current scene, rounded so float
 	## noise below 1e-3 doesn't count.
 	func _hash() -> String:
@@ -457,6 +480,10 @@ class Bridge extends Node:
 		return out
 
 	func _config(a: Dictionary) -> Dictionary:
+		if a.get("shots") is Dictionary:
+			var bad: String = shots.set_config(a["shots"])
+			if bad != "":
+				return {"ok": false, "error": "shots: " + bad}
 		if a.has("goal"):
 			var g := str(a["goal"])
 			if g == "":
@@ -469,7 +496,7 @@ class Bridge extends Node:
 			goal_met_at = -1
 			goal_error = ""
 			_check_goal()
-		return {"ok": true, "result": {"goal_met_at": goal_met_at, "goal_error": goal_error}}
+		return {"ok": true, "result": {"goal_met_at": goal_met_at, "goal_error": goal_error, "shots": shots.config()}}
 
 	## Errors don't switch the check off: they are reported in every look until it evaluates again
 	## (a freed or not-yet-spawned node is often temporary).
@@ -482,20 +509,18 @@ class Bridge extends Node:
 		if r[0] and _truthy(r[1]):
 			goal_met_at = frame
 
-	## Every incident ends an `until` right away; a step runs its frames and reports them.
-	func _check_incidents() -> void:
+	## Every incident ends an `until` right away; a step runs its frames and reports them. Their
+	## shots are attached by shots.tick() later in the frame.
+	func _check_incidents() -> Array:
 		var new: Array = incidents.tick(frame)
 		for inc in new:
-			if not headless:
-				var sh := _shot(960)
-				if sh.has("path"):
-					inc["shot"] = sh["path"]
 			# frame 0 (load errors): `start` reports them via the `incidents` command
 			if frame > 0:
 				cmd_incidents.append(inc)
 		if not new.is_empty() and until_expr != null and frames_left > 0:
 			until_result = {"met": false, "reason": "incident", "incident": new[0]["type"]}
 			frames_left = 1   # the decrement below makes it 0: reply on this frame
+		return new
 
 	func _check_until() -> void:
 		if tree.current_scene == null:
@@ -536,24 +561,7 @@ class Bridge extends Node:
 				return str(v) if v != null else null
 		return var_to_str(v)
 
-	# ------------------------------------------------------------ screenshots / window
-
-	## Render the frozen frame (no game logic runs) and save it under <session>/shots/.
-	func _shot(width: int) -> Dictionary:
-		if headless:
-			return {"error": "headless: no renderer (start the session with a window or xvfb for screenshots)"}
-		RenderingServer.force_draw(false)
-		var img := tree.root.get_texture().get_image()
-		if img == null or img.is_empty():
-			return {"error": "viewport image is empty"}
-		if width > 0 and img.get_width() > width:
-			img.resize(width, maxi(1, roundi(img.get_height() * float(width) / img.get_width())), Image.INTERPOLATE_LANCZOS)
-		var dir := session_dir.path_join("shots")
-		DirAccess.make_dir_recursive_absolute(dir)
-		var path := dir.path_join("f%d.png" % frame)
-		if img.save_png(path) != OK:
-			return {"error": "cannot write " + path}
-		return {"path": path, "size": [img.get_width(), img.get_height()], "frame": frame}
+	# ------------------------------------------------------------ window
 
 	## A visible window must not take real keyboard/mouse input: it would reach the game and break
 	## determinism. No focus = no keys; a mouse-passthrough region outside the window = no mouse.

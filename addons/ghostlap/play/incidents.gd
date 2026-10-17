@@ -10,7 +10,8 @@
 #   player_lost    no player for 120 frames without a scene change
 #   stuck          (signal) movement held >= 90 frames, player moved < 0.25 h
 #   death          (signal) health-like value fell to <= 0, the player was re-instanced in the same
-#                  scene, or it teleported > 4 h right after touching a hazard
+#                  scene, or it teleported > 4 h right after touching a hazard. `at` is where it
+#                  died; `repeat_of` names an earlier death within REPEAT_H of the same spot
 extends RefCounted
 
 const BUG := ["error", "crash", "hang", "out_of_bounds", "player_lost", "trapped", "softlock"]
@@ -21,6 +22,7 @@ const OOB_H := 10.0
 const TELEPORT_H := 4.0
 const MAX_ERRORS := 20               # distinct error incidents; more are counted, not reported
 const DEATH_GAP := 120               # one death, not two, for "health hit 0, then the level reloaded"
+const REPEAT_H := 3.0
 const HP_RE := "^(health|hp|hit_?points|life|lives)$"
 const MOVE_ROLES := ["left", "right", "up", "down", "forward", "back", "backward"]
 const MOVE_RE := "(^|_)(move|walk|run|left|right|up|down|forward|back|backward|strafe)(_|$)"
@@ -54,6 +56,9 @@ var _player_scene := ""
 var _lost_since := -1
 var _lost_fired := false
 var _prev_pos = null
+var _last_pos = null                 # the player's last position, kept across a reload
+var _last_h := 1.0
+var _deaths: Array = []              # [scene path, position, frame] of each reported death
 var _hist: Array = []                # positions while movement is held
 var _stuck_fired := false
 var _oob_fired := false
@@ -133,7 +138,8 @@ func tick(frame: int) -> Array:
 	# death: re-instanced in the same scene (reload or respawn), not a move to another level
 	if _player_id != 0 and p.get_instance_id() != _player_id:
 		if scene_path == _player_scene:
-			_death(out, frame, "player re-instanced in the same scene (reload or respawn)", {"pos": _v(pos)})
+			var died_at = _last_pos if _last_pos != null else pos
+			_death(out, frame, "player re-instanced in the same scene (reload or respawn)", {"pos": _v(pos)}, died_at, _last_h)
 		_last_hp.clear()
 		_prev_pos = null
 		_hist.clear()
@@ -145,7 +151,7 @@ func tick(frame: int) -> Array:
 		var v = p.get(prop)
 		if typeof(v) in [TYPE_INT, TYPE_FLOAT]:
 			if _last_hp.has(prop) and _last_hp[prop] > 0 and v <= 0:
-				_death(out, frame, "%s fell to %s" % [prop, v], {"prop": prop, "value": v})
+				_death(out, frame, "%s fell to %s" % [prop, v], {"prop": prop, "value": v}, pos, h)
 			_last_hp[prop] = v
 
 	# death: teleport right after touching a hazard (a respawn at a checkpoint)
@@ -154,8 +160,10 @@ func tick(frame: int) -> Array:
 		if jump > TELEPORT_H * h:
 			var hz := _hazard_near(_prev_pos, 1.5 * h)
 			if hz != "":
-				_death(out, frame, "teleported %.1f h right after touching %s (respawn?)" % [jump / h, hz], {"from": _v(_prev_pos), "to": _v(pos)})
+				_death(out, frame, "teleported %.1f h right after touching %s (respawn?)" % [jump / h, hz], {"from": _v(_prev_pos), "to": _v(pos)}, _prev_pos, h)
 	_prev_pos = pos
+	_last_pos = pos
+	_last_h = h
 
 	# out_of_bounds
 	if _bounds != null:
@@ -199,12 +207,20 @@ func _wants_to_move() -> bool:
 	return x != 0 or y != 0
 
 
-func _death(out: Array, frame: int, why: String, data: Dictionary) -> void:
+func _death(out: Array, frame: int, why: String, data: Dictionary, at, h: float) -> void:
 	# counted from the last death reported, so a game that kills the player every second still
 	# reports one death per DEATH_GAP
-	if frame - _last_death >= DEATH_GAP:
-		out.append(_fire(frame, "death", why, data))
-		_last_death = frame
+	if frame - _last_death < DEATH_GAP:
+		return
+	var scene_path := tree.current_scene.scene_file_path
+	data["at"] = _v(at)
+	for d in _deaths:
+		if d[0] == scene_path and at.distance_to(d[1]) <= REPEAT_H * h:
+			data["repeat_of"] = d[2]
+			break
+	_deaths.append([scene_path, at, frame])
+	out.append(_fire(frame, "death", why, data))
+	_last_death = frame
 
 
 func _fire(frame: int, kind: String, why: String, data: Dictionary = {}) -> Dictionary:
