@@ -10,8 +10,10 @@ import signal
 import sys
 from pathlib import Path
 
-from ..project import GhostlapError, Project, find_godot, find_project
+from ..project import GhostlapError, Project, ensure_imported, find_godot, find_project
 from . import config as cfgmod
+from . import preflight as preflightmod
+from . import replay as replaymod
 from . import verdict as verdictmod
 from .bridge_client import Bridge, BridgeError
 from .session import Session, load_goal, play_dir
@@ -106,6 +108,7 @@ def cmd_start(args, project: Project) -> int:
     prof = read_profile(project.profile_path)
     display = args.display or "offscreen"
     flags = cfgmod.rolling_flag(args.rolling_shots) if args.rolling_shots else {}
+    ensure_imported(godot, project)
     s, res = Session.start(project, godot, goal=goal, scene=args.scene, display=display, seed=args.seed,
                            profile=bridge_profile(project, prof) if prof else None, flags=flags)
     look = res
@@ -121,6 +124,14 @@ def cmd_start(args, project: Project) -> int:
     if prof is None:
         lines.append("note: no .ghostlap/profile.yaml — run `ghostlap scan && ghostlap detect` for player-aware views")
     lines += [incident_line(i) for i in s.meta.get("load_incidents") or []]
+    pf = preflightmod.cached(project)
+    if pf is None:
+        lines.append("preflight: not run for this version of the project (`ghostlap play preflight`)")
+    else:
+        warn = preflightmod.warnings(pf)
+        lines += [f"preflight: {w}" for w in warn] or ["preflight: no warnings"]
+        if display == "headless" and pf.get("render_dependent"):
+            lines.append("WARNING: this game has render-dependent logic and the session is headless; restart without --headless")
     lines.append(shots_line(s))
     lines += [header(s, look)] + render_views(look["views"]) + hint_line(hint)
     _emit(args, s, "\n".join(lines), {"session": s.id, "look": look})
@@ -172,13 +183,22 @@ def incident_line(inc: dict) -> str:
     return f"INCIDENT f={inc['f']} {inc['type']} [{inc['class']}]: {inc['why']}{where}{shot}"
 
 
+def _split_views(v: list[str] | None) -> list[str] | None:
+    return [x.strip() for part in v for x in part.split(",") if x.strip()] if v else None
+
+
 def _after_step(args, s: Session, res: dict, ran: int, extra: list[str]) -> None:
     lines = [header(s, res, ran)] + extra + [incident_line(i) for i in res.get("incidents") or []]
+    lost = res.get("input_lost") or []
+    if lost:
+        lines.append("WARNING: Godot released " + ", ".join(x["input"].split(":", 1)[1] for x in lost)
+                     + " while the game was frozen (its window gained or lost focus); the bridge pressed it again on f="
+                     + str(lost[0]["f"]) + ", recorded in the input line. Without render-dependent logic, --headless avoids this")
     lines += [f"UI f={u['f']}: {u['node']} appeared" + (f" ({u['text']})" if u.get("text") else " (no text)")
               for u in res.get("new_ui") or []]
     responses, views = [res], None
     if not args.quiet:
-        look = _bridge_call(s, lambda: s.look_raw())
+        look = _bridge_call(s, lambda: s.look_raw(views=_split_views(getattr(args, "view", None))))
         responses.append(look)
         views = look["views"]
         lines += render_views(s.collapse(look["views"]))
@@ -321,22 +341,27 @@ def cmd_end(args, project: Project) -> int:
         s.log("refused", cmd="end", verdict=args.verdict, why=str(e).splitlines()[0])
         s.save()
         raise
-    samples = None
+    samples, hashes = None, None
     if alive:
         b = s.bridge
         try:
             look = s.look_raw(views=["player"])
             hashes = b.hashes()
+            samples = b.samples()
             with open(s.dir / "hashes.jsonl", "w") as f:
                 for i, h in enumerate(hashes):
                     if i % 60 == 0 or i == len(hashes) - 1:
                         f.write(_j({"f": i, "hash": h}) + "\n")
-            samples = b.samples()
             m["final"] = {"f": look["f"], "hash": look["hash"], "player": look["views"].get("player")}
         except BridgeError:
             pass
         b.quit()
-    verdictmod.write(s, res, args.why, samples)
+    rep = None
+    godot = find_godot(args.godot)
+    if not args.no_replay and godot:
+        rep = replaymod.check(s, godot, hashes, samples)
+    verdictmod.confirm(res, rep)
+    verdictmod.write(s, res, args.why, samples, rep)
     m.update({"verdict": res["verdict"], "basis": res["basis"], "why": args.why, "evidence": args.evidence,
               "status": "ended"})
     s.log("end", verdict=res["verdict"], basis=res["basis"], why=args.why)
@@ -344,15 +369,81 @@ def cmd_end(args, project: Project) -> int:
     pointer = play_dir(project) / "active"
     if pointer.is_file() and pointer.read_text().strip() == s.id:
         pointer.unlink()
-    basis = {"machine": "machine-checked", "visual": "visual evidence", "incident": "unconfirmed until the replay check",
-             "blocked": "not a game bug"}[res["basis"]]
-    lines = [f"session {s.id} ended: {res['verdict']} ({basis}) — {args.why}",
+    basis = {"machine": "machine-checked", "visual": "visual evidence",
+             "incident": "confirmed by the replay" if res.get("confirmed") else "the replay didn't hit it again"
+             if res.get("confirmed") is False else "no replay check", "blocked": "not a game bug"}[res["basis"]]
+    lines = [f"session {s.id} ended: {res['verdict']} ({basis}) — {args.why}", replay_line(rep),
              *(["warning: incident shots were off (shots.on), so this fail has no pictures of its incidents"]
                if args.verdict == "fail" and "incident" not in cfgmod.value(s.config(), "shots.on") else []),
              f"goal met: {'yes, at f=' + str(m['goal_met_at']) if m.get('goal_met_at') is not None else 'no'}",
              f"frames {m['used']['frames']}, commands {m['used']['commands']}, shots {m['used']['shots']}, ~{m['used']['bytes'] // 4} tokens returned",
              f"report: {s.dir / 'report.md'} · evidence: {s.dir / 'evidence.json'}"]
+    if args.video:
+        lines += video_lines(s, godot, full=False)
     _emit(args, None, "\n".join(lines), m)
+    return 0
+
+
+def replay_line(rep: dict | None) -> str:
+    if rep is None:
+        return "replay check: not run"
+    if rep["result"] == "exact":
+        return f"replay check: exact ({rep['frames']} frames, {rep['mode']}, {rep['seconds']} s) — every frame matches"
+    if rep["result"] == "diverged":
+        return f"replay check: diverged at f={rep['diverged_at']}: {rep['field']}" + (
+            f" · likely: {'; '.join(rep['likely_causes'])}" if rep.get("likely_causes") else "")
+    return f"replay check: {rep['result']} ({rep.get('why', '')})"
+
+
+def _ended(args, project: Project) -> Session:
+    """--session, else the most recent session (ended ones aren't `active` any more)."""
+    if args.session:
+        return Session.active(project, args.session)
+    ids = sorted(d.name for d in play_dir(project).iterdir() if (d / "session.json").is_file())
+    if not ids:
+        raise GhostlapError("no play sessions yet")
+    return Session(project, ids[-1])
+
+
+def video_lines(s: Session, godot: str | None, full: bool) -> list[str]:
+    if not godot:
+        raise GhostlapError("Godot not found — set GHOSTLAP_GODOT or pass --godot")
+    res, why, rep = verdictmod.load(s)
+    hud, moments = verdictmod.hud(s, res, why)
+    v = replaymod.video(s, godot, hud, moments, full=full)
+    (s.dir / "report.md").write_text(verdictmod.report(s, res, why, rep, v))
+    spans = v["spans"]
+    cut = "" if spans == [(0, v["frames"])] else f" (highlights: {len(spans)} windows of the {v['frames']} frames; --full for all)"
+    lines = [f"video: {v['mp4']}{cut}", f"gif: {v['gif']} ({v['gif_bytes'] // 1024} KB)"]
+    if v.get("sheet"):
+        lines.append(f"contact sheet (read this to check the video): {v['sheet']}")
+    if not v["matches_session"]:
+        lines.append(f"WARNING: the rendered replay diverged from the session (by f={v.get('diverged_by')}): "
+                     "the video may not show what happened")
+    return lines
+
+
+def cmd_video(args, project: Project) -> int:
+    s = _ended(args, project)
+    if s.meta.get("status") == "running":
+        raise GhostlapError(f"session {s.id} is still running: end it first, so the video can show the verdict")
+    _emit(args, None, "\n".join(video_lines(s, find_godot(args.godot), args.full)), {})
+    return 0
+
+
+def cmd_replay(args, project: Project) -> int:
+    s = _ended(args, project)
+    if s.meta.get("status") == "running":
+        raise GhostlapError(f"session {s.id} is still running; `play rewind` goes back within a session")
+    godot = find_godot(args.godot)
+    if not godot:
+        raise GhostlapError("Godot not found — set GHOSTLAP_GODOT or pass --godot")
+    r = replaymod.watch(s, godot, args.display or "window", fast=args.fast)
+    msg = {"exact": "matched the session at every recorded frame", "diverged": f"DIVERGED from the session by f={r['diverged_by']}",
+           "not compared": "not compared (the session has no hashes)"}[r["result"]]
+    extra = f" · crashed near f={r['crashed_at']}" if r["crashed_at"] is not None else (
+        f" · hung at f={r['hung_at']}" if r["hung_at"] is not None else "")
+    _emit(args, None, f"replayed {s.id}: {r['frames']} frames, {msg}{extra}", r)
     return 0
 
 
@@ -468,6 +559,18 @@ def cmd_log_read(args, project: Project | None) -> int:
     return 0
 
 
+def cmd_preflight(args, project: Project) -> int:
+    godot = find_godot(args.godot)
+    if not godot:
+        raise GhostlapError("Godot not found — set GHOSTLAP_GODOT or pass --godot")
+    pf = preflightmod.run(project, godot, args.scene, args.force)
+    lines = preflightmod.render(pf)
+    warn = preflightmod.warnings(pf)
+    lines.append(f"{len(warn)} warning(s) to raise with the user" if warn else "nothing to raise with the user")
+    _emit(args, None, "\n".join(lines), pf)
+    return 0
+
+
 def cmd_kill(args, project: Project) -> int:
     targets = []
     if args.all:
@@ -522,6 +625,7 @@ def _input_flags(p: argparse.ArgumentParser) -> None:
     g.add_argument("--key-hold", action="append", help="raw keys held for the whole command")
     g.add_argument("--mouse", action="append", help="click at screen x,y[,button][@frame]")
     p.add_argument("--quiet", action="store_true", help="only the header line, no look")
+    p.add_argument("--view", action="append", help="views for the look after it (default: the session's)")
 
 
 def add_parser(sub, common) -> None:
@@ -540,6 +644,11 @@ def add_parser(sub, common) -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--rolling-shots", metavar="EVERY[:KEEP]|off", help="rolling screenshots, e.g. 300:10 (default 600:5)")
     p.set_defaults(play_fn=cmd_start)
+
+    p = ps.add_parser("preflight", parents=[common], help="before the first session: loads? deterministic? raw-key input? (cached)")
+    p.add_argument("--scene", help="the start scene to boot (default: the main scene)")
+    p.add_argument("--force", action="store_true", help="rerun even if nothing changed")
+    p.set_defaults(play_fn=cmd_preflight)
 
     p = ps.add_parser("look", parents=[common, sess], help="observe; no time passes")
     p.add_argument("--view", action="append", help="views: ui,player,near,map,grid,state,game (default: the profile's)")
@@ -578,7 +687,22 @@ def add_parser(sub, common) -> None:
     p.add_argument("--verdict", required=True, choices=["pass", "fail", "blocked"])
     p.add_argument("--why", required=True)
     p.add_argument("--evidence", action="append", help="decisive frames or shots, e.g. f1260")
+    p.add_argument("--video", action="store_true", help="also render the captioned video (needs a display and ffmpeg)")
+    p.add_argument("--no-replay", action="store_true", help="skip the replay check")
     p.set_defaults(play_fn=cmd_end)
+
+    p = ps.add_parser("replay", parents=[common], help="watch an ended session's final input line again (the exact repro)")
+    p.add_argument("session", nargs="?", help="session id (default: the latest)")
+    d = p.add_mutually_exclusive_group()
+    d.add_argument("--window", dest="display", action="store_const", const="window", help="watch it (default)")
+    d.add_argument("--headless", dest="display", action="store_const", const="headless")
+    p.add_argument("--fast", action="store_true", help="as fast as possible instead of real time")
+    p.set_defaults(play_fn=cmd_replay)
+
+    p = ps.add_parser("video", parents=[common], help="render an ended session as a captioned MP4/GIF (Movie Maker + ffmpeg)")
+    p.add_argument("session", nargs="?", help="session id (default: the latest)")
+    p.add_argument("--full", action="store_true", help="every frame, not just highlights of a long session")
+    p.set_defaults(play_fn=cmd_video)
 
     p = ps.add_parser("rewind", parents=[common, sess], help="restart and replay the input line to a frame; later inputs become an attempt")
     p.add_argument("--to", type=int, required=True, help="the frame to go back to")

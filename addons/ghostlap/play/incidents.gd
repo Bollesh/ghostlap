@@ -59,7 +59,8 @@ var _prev_pos = null
 var _last_pos = null                 # the player's last position, kept across a reload
 var _last_h := 1.0
 var _deaths: Array = []              # [scene path, position, frame] of each reported death
-var _hist: Array = []                # positions while movement is held
+var _hist: Array = []                # positions while movement is held in one direction
+var _hist_dir := ""                  # that direction; a change starts a new window
 var _stuck_fired := false
 var _oob_fired := false
 var _last_hp := {}
@@ -178,7 +179,12 @@ func tick(frame: int) -> Array:
 			_oob_fired = false
 
 	# stuck (a signal: pushing into a wall can be on purpose)
-	if _wants_to_move():
+	var dir := _move_dir()
+	if dir != _hist_dir:
+		# right then back left can end where it began: that's moving, not stuck
+		_hist.clear()
+		_hist_dir = dir
+	if dir != "":
 		_hist.append(pos)
 		if _hist.size() > STUCK_FRAMES + 1:
 			_hist.pop_front()
@@ -196,15 +202,15 @@ func tick(frame: int) -> Array:
 	return out
 
 
-## Movement input with a direction: left+right held together cancel out (no intent to move).
-func _wants_to_move() -> bool:
+## The held movement direction, "" for none: left+right held together cancel out (no intent to move).
+func _move_dir() -> String:
 	if _move_roles.is_empty():
-		return _move_actions.any(func(a): return Input.is_action_pressed(a))
+		return ",".join(_move_actions.filter(func(a): return Input.is_action_pressed(a)))
 	var held := func(role: String) -> int:
 		return 1 if _move_roles.has(role) and Input.is_action_pressed(_move_roles[role]) else 0
 	var x: int = held.call("right") - held.call("left")
 	var y: int = held.call("up") + held.call("forward") - held.call("down") - held.call("back") - held.call("backward")
-	return x != 0 or y != 0
+	return "" if x == 0 and y == 0 else "%d,%d" % [x, y]
 
 
 func _death(out: Array, frame: int, why: String, data: Dictionary, at, h: float) -> void:

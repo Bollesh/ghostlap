@@ -2,7 +2,9 @@
 #
 #   godot [--headless] --path <project> --fixed-fps <physics_tps> --script <abs>/bridge.gd -- \
 #       --session=<abs dir> --scene=res://level.tscn [--seed=N] [--profile=<abs profile.json>] \
-#       [--shots={"every":600,"keep":5,"on":[...],"width":960}]
+#       [--shots={"every":600,"keep":5,"on":[...],"width":960}] [--hud=<abs hud.json>]
+#
+# --hud draws the session video's captions (hud.gd); it's only given for Movie Maker replays.
 #
 # profile.json (written by the CLI from .ghostlap/profile.yaml): player {scene, node}, dims,
 # track_props, hazard, views (default look views), state_nodes. See observe.gd.
@@ -30,6 +32,7 @@ extends SceneTree
 const Observe = preload("observe.gd")
 const Incidents = preload("incidents.gd")
 const Shots = preload("shots.gd")
+const Hud = preload("hud.gd")
 
 var bridge: Node
 
@@ -89,6 +92,9 @@ class Bridge extends Node:
 	var incidents: RefCounted
 	var cmd_incidents: Array = []       # incidents during the running step/until
 	var shots: RefCounted
+	var hud: CanvasLayer = null
+	var _down := {}                     # injected presses not released yet: "action:x"/"key:x" -> input
+	var _input_lost: Array = []         # re-pressed at the start of the running step (see _restore_held)
 	var _progress_ms := 0
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
@@ -116,6 +122,17 @@ class Bridge extends Node:
 			if bad != "":
 				_fatal("--shots: " + bad)
 				return
+		if args.has("hud"):
+			var hf := FileAccess.open(args["hud"], FileAccess.READ)
+			var hd = JSON.parse_string(hf.get_as_text()) if hf != null else null
+			if not hd is Dictionary:
+				_fatal("cannot read --hud=" + str(args["hud"]))
+				return
+			hud = Hud.new()
+			var hw := int(ProjectSettings.get_setting("display/window/size/viewport_width", 1152))
+			var hh := int(ProjectSettings.get_setting("display/window/size/viewport_height", 648))
+			hud.setup(hd, Vector2(hw, hh))
+			add_child(hud)
 		if not headless:
 			_detach_window_from_desktop_input()
 		if server.listen(0, "127.0.0.1") != OK:
@@ -159,6 +176,8 @@ class Bridge extends Node:
 		var met_before := goal_met_at
 		_check_goal()
 		shots.tick(frame, new_incs, goal_met_at >= 0 and met_before < 0)
+		if hud != null:
+			hud.show_frame(frame)
 		if frames_left > 0:
 			frames_left -= 1
 			if Time.get_ticks_msec() - _progress_ms >= PROGRESS_MS:
@@ -172,6 +191,9 @@ class Bridge extends Node:
 				res.merge(_news(), true)
 				res["incidents"] = cmd_incidents
 				cmd_incidents = []
+				if not _input_lost.is_empty():
+					res["input_lost"] = _input_lost
+					_input_lost = []
 				if until_expr != null:
 					if until_result.is_empty():
 						until_result = {"met": false, "reason": "max"}
@@ -184,7 +206,9 @@ class Bridge extends Node:
 				_reply(pending_peer, pending_id, {"ok": true, "result": res})
 				pending_peer = null
 				pending_id = null
+			var held := _held_now()
 			_serve_until_step()
+			_restore_held(held, frame + 1)
 		if not quitting:
 			_apply_inputs(frame + 1)
 
@@ -343,38 +367,77 @@ class Bridge extends Node:
 			schedule[f].append(inp)
 		return ""
 
+	## Injected holds that are down as the game freezes.
+	func _held_now() -> Array:
+		return _down.keys().filter(func(k): return _is_down(_down[k]))
+
+	## A window that gets or loses focus while frozen makes Godot release every pressed input
+	## (X11 does it on focus changes), behind the game's back. Press those holds again for the
+	## next frame and report them: the CLI records a release+press on that frame, which replays
+	## the same (just_pressed true, just_released false).
+	func _restore_held(held: Array, f: int) -> void:
+		var releasing := {}
+		for inp in schedule.get(f, []):
+			if not bool(inp.get("pressed", true)):
+				releasing[_down_key(inp)] = true
+		for k in held:
+			if _down.has(k) and not _is_down(_down[k]) and not releasing.has(k):
+				_inject(_down[k], true)
+				_input_lost.append({"f": f, "input": k})
+
+	static func _down_key(inp: Dictionary) -> String:
+		if inp.has("action"):
+			return "action:" + str(inp["action"])
+		if inp.has("key"):
+			return "key:" + str(inp["key"])
+		return ""
+
+	static func _is_down(inp: Dictionary) -> bool:
+		if inp.has("action"):
+			return Input.is_action_pressed(str(inp["action"]))
+		return Input.is_physical_key_pressed(OS.find_keycode_from_string(str(inp["key"])))
+
 	func _apply_inputs(f: int) -> void:
 		for inp in schedule.get(f, []):
 			var pressed := bool(inp.get("pressed", true))
-			if inp.has("action"):
-				var action := str(inp["action"])
-				var mapped := _mapped_event(action, pressed) if _action_events_reset_others else null
-				if mapped != null:
-					Input.parse_input_event(mapped)
-					continue
-				var ev := InputEventAction.new()
-				ev.action = action
-				ev.pressed = pressed
+			var dk := _down_key(inp)
+			if dk != "":
 				if pressed:
-					ev.strength = float(inp.get("strength", 1.0))
-				Input.parse_input_event(ev)
-			elif inp.has("key"):
-				var kev := InputEventKey.new()
-				kev.keycode = OS.find_keycode_from_string(str(inp["key"]))
-				kev.physical_keycode = kev.keycode
-				kev.pressed = pressed
-				Input.parse_input_event(kev)
-			elif inp.has("mouse"):
-				var pos: Array = inp["mouse"]
-				var mev := InputEventMouseButton.new()
-				mev.position = Vector2(pos[0], pos[1])
-				mev.global_position = mev.position
-				mev.button_index = int(inp.get("button", MOUSE_BUTTON_LEFT))
-				mev.pressed = pressed
-				if pressed:
-					mev.button_mask = 1 << (mev.button_index - 1)
-				Input.parse_input_event(mev)
+					_down[dk] = inp
+				else:
+					_down.erase(dk)
+			_inject(inp, pressed)
 		schedule.erase(f)
+
+	func _inject(inp: Dictionary, pressed: bool) -> void:
+		if inp.has("action"):
+			var action := str(inp["action"])
+			var mapped := _mapped_event(action, pressed) if _action_events_reset_others else null
+			if mapped != null:
+				Input.parse_input_event(mapped)
+				return
+			var ev := InputEventAction.new()
+			ev.action = action
+			ev.pressed = pressed
+			if pressed:
+				ev.strength = float(inp.get("strength", 1.0))
+			Input.parse_input_event(ev)
+		elif inp.has("key"):
+			var kev := InputEventKey.new()
+			kev.keycode = OS.find_keycode_from_string(str(inp["key"]))
+			kev.physical_keycode = kev.keycode
+			kev.pressed = pressed
+			Input.parse_input_event(kev)
+		elif inp.has("mouse"):
+			var pos: Array = inp["mouse"]
+			var mev := InputEventMouseButton.new()
+			mev.position = Vector2(pos[0], pos[1])
+			mev.global_position = mev.position
+			mev.button_index = int(inp.get("button", MOUSE_BUTTON_LEFT))
+			mev.pressed = pressed
+			if pressed:
+				mev.button_mask = 1 << (mev.button_index - 1)
+			Input.parse_input_event(mev)
 
 	## Godot < 4.4: InputMap.event_get_index() ignores whether an InputEventAction matches, so
 	## parsing one updates every action, releasing all the others (fixed in 4.4). There, an action

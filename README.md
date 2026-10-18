@@ -3,10 +3,38 @@
 **Claude playtests your Godot game, proves what works, and leaves a ghost: a replay test that
 keeps proving it.**
 
-> **Status: in development.** The playtester (`ghostlap play`: Claude drives your real levels
-> frame by frame, rules pass / fail / blocked with evidence, and saves the run as a CI test) is
-> being built on the `phase-1` branch. What ships today is the **game-feel toolkit**,
-> `ghostlap feel`, described below.
+![Claude collecting the last coins in Godot's 2D platformer demo, with the goal, held keys, its notes and the PASS verdict captioned](docs/media/playtest/platformer_demo_all_coins.gif)
+
+*Claude playing Godot's official [2D platformer demo](https://github.com/godotengine/godot-demo-projects/tree/master/2d/platformer)
+(MIT) from a cold start, with the goal "collect all 21 coins". It read the frozen game as text,
+found the two elevators in the level file, and used 87 of its 120 commands. `play end` accepted
+the pass because the coin counter reached 21, then replayed all 3,382 frames identically and
+rendered this captioned video. The GIF is the last 11 seconds.*
+
+> **Status: in development.** The playtester (`ghostlap play`) works end to end on the
+> `phase-1` branch: Claude drives your real levels frame by frame and rules pass / fail / blocked
+> with evidence. `play end` checks that ruling, replays the run to confirm it, and renders the
+> video. Saving the run as a CI test comes next. What ships today on `main` is the
+> **game-feel toolkit**, `ghostlap feel`, described below.
+
+## Playtester (`ghostlap play`, phase-1 branch)
+
+```bash
+ghostlap scan && ghostlap detect && ghostlap play preflight   # what the game is; will it replay?
+ghostlap play start .ghostlap/goals/all_coins.yaml            # the game starts frozen at frame 0
+ghostlap play until "player.global_position.x > 770" --hold move_right --press jump@1:20
+ghostlap play look --view player,near,map                     # the frozen game as compact text
+ghostlap play rewind --to 2755                                # try again from an earlier frame
+ghostlap play end --verdict pass --why "…" --video             # checked, replayed, report + video
+```
+
+The `playtest` skill in `plugin/skills/playtest/` teaches Claude the loop:
+1. understand the game;
+2. write a goal with a machine check;
+3. plan the route;
+4. play;
+5. rule pass, fail or blocked;
+6. report.
 
 ## Game feel toolkit (`ghostlap feel`)
 

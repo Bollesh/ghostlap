@@ -116,9 +116,9 @@ def test_fail_needs_a_bug_incident_on_the_final_line(proj, gl):
     gl("rewind", "--to", "10")   # the error at f=29 is on the abandoned branch
     assert "there are none" in gl("end", "--verdict", "fail", "--why", "error", ok=False).stderr
     gl("step", "-n", "30", "--quiet")   # and now on the final line
-    assert "ended: fail (unconfirmed" in gl("end", "--verdict", "fail", "--why", "null instance").stdout
+    assert "ended: fail (confirmed by the replay)" in gl("end", "--verdict", "fail", "--why", "null instance").stdout
     ev = json.loads((_session(proj) / "evidence.json").read_text())
-    assert ev["basis"] == "incident" and ev["confirmed"] is None
+    assert ev["basis"] == "incident" and ev["confirmed"] is True
     assert [(i["what"], i["type"], i["f"]) for i in ev["evidence"]] == [("incident", "error", 29)]
     report = (_session(proj) / "report.md").read_text()
     assert "f=29 **error** (bug)" in report and "attempt 1" in report and "incidents: error" in report
@@ -187,3 +187,10 @@ def test_a_rewind_abandons_later_events():
     final, attempts = split_line(ev)
     assert [(e["f"], e["kind"]) for e in final] == [(5, "note"), (10, "rewind"), (12, "note")]
     assert [[e["f"] for e in a] for a in attempts] == [[30], [20, 25]]
+
+
+def test_a_re_pressed_hold_is_one_hold_in_the_repro():
+    line = [{"f": 1, "action": "move_right", "pressed": True},
+            {"f": 50, "action": "move_right", "pressed": False}, {"f": 50, "action": "move_right", "pressed": True},
+            {"f": 120, "action": "move_right", "pressed": False}]
+    assert repro_steps(line, 60) == ["hold move_right 0.02–2.00 s"]

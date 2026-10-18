@@ -1,7 +1,7 @@
 {
   "name": "ghostlap",
   "version": "0.2.0",
-  "description": "Ghostlap for Godot 4: a game-feel toolkit today (jump arcs, coyote time, acceleration, dashes, hitstop... with verified, file:line-linked fixes); the playtester (Claude plays your levels and saves runs as replay tests) is in development. Needs the ghostlap CLI and Godot 4.3+.",
+  "description": "Ghostlap for Godot 4: Claude playtests your game (plays real levels frame by frame from the shell, rules pass / fail / blocked with checked evidence, replays the run and renders a captioned video), plus a game-feel toolkit (jump arcs, coyote time, acceleration, dashes, hitstop... with verified, file:line-linked fixes). Needs the ghostlap CLI and Godot 4.3+.",
   "author": {
     "name": "Bollesh"
   },

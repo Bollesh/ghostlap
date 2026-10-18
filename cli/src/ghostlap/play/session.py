@@ -26,7 +26,9 @@ import yaml
 
 from ..project import GhostlapError, Project
 from . import config as cfgmod
-from .bridge_client import Bridge, BridgeError, BridgeHang
+from . import replay
+from .replay import fps
+from .bridge_client import Bridge, BridgeError, BridgeHang, project_tps
 
 DEFAULT_BUDGET = {"frames": 36000, "commands": 120, "shots": 15}
 # commands that never count against the budget (they're how a session ends or recovers)
@@ -194,6 +196,7 @@ class Session:
         cfg = cfgmod.resolve([(cfgmod.CFG_FILE, cfgmod.from_cfg(project.root)), ("goal", cfgmod.from_goal(goal.get("shots"))),
                               ("play start", flags or {})])
         meta = {"id": sid, "goal": goal, "scene": start_scene, "display": display, "seed": seed, "created": time.time(),
+                "fps": project_tps(project.root),
                 "frame": 0, "held": [], "pending": [], "budget": bud,
                 "used": {"frames": 0, "commands": 1, "shots": 0, "bytes": 0}, "goal_met_at": None,
                 "cheats": [], "status": "running", "config": cfg,
@@ -224,7 +227,7 @@ class Session:
         first: the session's first launch (a rewind's relaunch doesn't log the goal error again)."""
         m = self.meta
         bridge = Bridge.launch(godot, self.project.root, m["scene"], self.dir, seed=m["seed"], display=m["display"],
-                               profile=profile, shots=shots)
+                               physics_tps=fps(m), profile=profile, shots=shots)
         success = (m.get("goal") or {}).get("success")
         if success:
             try:
@@ -382,7 +385,8 @@ class Session:
         scene_changed = h.get("scene") != last.get("scene")
         h["scene"] = last.get("scene")
         for r in responses:
-            for inc in r.get("incidents") or []:
+            incs = r.get("incidents")
+            for inc in incs if isinstance(incs, list) else []:   # a look carries only their count
                 if inc["type"] == "death" and "repeat_of" in inc:
                     found.append(("repeat_death", inc.get("shot"), f"died again where it died at f={inc['repeat_of']}"))
                 elif inc["type"] == "stuck":
@@ -511,16 +515,7 @@ class Session:
         quiet = {**cfgmod.bridge_shots(self.config()), "every": 0, "on": []}
         m["status"] = "running"
         b = self._boot(godot, profile, quiet, first=False)
-        # an eval write at frame f ran after frame f, before the next one: replay it there
-        at = 0
-        for stop in sorted({c["f"] for c in cheats} | {to}):
-            if stop > at:
-                b.step(stop - at, [{"at": e["f"] - at, **{k: v for k, v in e.items() if k != "f"}}
-                                   for e in kept if at < e["f"] <= stop])
-                at = stop
-            for c in cheats:
-                if c["f"] == stop:
-                    b.request("eval", expr=c["eval"], write=True)
+        replay.drive(b, kept, cheats, to)
         b.request("config", shots=cfgmod.bridge_shots(self.config()))
         after = b.hashes()
         diverged = next((f for f in range(to + 1) if f >= len(before) or f >= len(after) or before[f] != after[f]), None)
@@ -546,6 +541,16 @@ class Session:
         self.save()
         return {"look": look, "attempt": m["attempts"][-1], "diverged_at": diverged}
 
+    def _record(self, start: int, inputs: list[dict], ran: int) -> None:
+        """The input line is what the game actually saw: an until that stopped early (or a crash)
+        drops the rest."""
+        with open(self.dir / "inputs.jsonl", "a") as f:
+            for e in inputs:
+                if e["at"] <= ran:
+                    f.write(json.dumps({"f": start + e["at"], **{k: v for k, v in e.items() if k != "at"}}) + "\n")
+        self.meta["used"]["frames"] += ran
+        self.meta["frame"] = start + ran
+
     def run(self, cmd: str, frames: int, inputs: list[dict], held: list[str], taps: list[dict],
             expr: str | None = None) -> dict:
         start = self.meta["frame"]
@@ -554,6 +559,8 @@ class Session:
             res = b.until(expr, frames, inputs) if cmd == "until" else b.step(frames, inputs)
         except BridgeHang as e:
             b.kill()
+            if e.frame is not None:
+                self._record(start, inputs, e.frame - start)
             self.meta["status"] = "hung"
             self.incident({"f": e.frame if e.frame is not None else start, "type": "hang", "class": "bug", "why": str(e),
                            "log_tail": log_summary(self.dir / "godot.log")})
@@ -562,18 +569,24 @@ class Session:
                                 f"(`ghostlap play end --verdict fail --why …`). log: {self.dir / 'godot.log'}") from e
         except BridgeError as e:
             if b.exited():
+                # the crash came at or after the last progress frame: keep the inputs up to it
+                got = replay._progress(self.dir)
+                if got > start:
+                    self._record(start, inputs, got - start)
                 raise GhostlapError(f"during {cmd} from frame {start}: " + self.mark_dead(str(e))) from e
             raise
         ran = res["f"] - start
-        # the input line is what the game actually saw: an until that stopped early drops the rest
-        with open(self.dir / "inputs.jsonl", "a") as f:
-            for e in inputs:
-                if e["at"] <= ran:
-                    f.write(json.dumps({"f": start + e["at"], **{k: v for k, v in e.items() if k != "at"}}) + "\n")
+        # holds Godot released while the game was frozen (a window focus change), pressed again by
+        # the bridge on the first frame: a release+press there replays the same
+        lost = []
+        for x in res.get("input_lost") or []:
+            kind, name = x["input"].split(":", 1)
+            lost += [{"at": x["f"] - start, kind: name, "pressed": False}, {"at": x["f"] - start, kind: name, "pressed": True}]
+            self.log("input_lost", input=x["input"], at=x["f"])
+        self._record(start, lost + inputs, ran)
         self.meta["held"] = held
         # pressed but not yet released: the release lands on the next command's first frame
         self.meta["pending"] = [{"kind": t["kind"], "what": t["what"]} for t in taps if t["at"] <= ran < t["up"]]
-        self.meta["used"]["frames"] += ran
         for inc in res.get("incidents") or []:
             self.incident(inc)
         self._sync(res)

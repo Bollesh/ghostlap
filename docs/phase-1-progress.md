@@ -1,14 +1,23 @@
-# Phase 1 progress: items 1.1–1.6
+# Phase 1 progress: items 1.1–1.8
 
-Phase 1's goal is "Claude proves level 1 is completable". After items 1.1–1.6, Claude can start a
-Godot game frozen, read it as text, play it from the shell one short command at a time, and leave
-behind an input line that replays exactly. It is told when the game errors, crashes, hangs or loses
-the player, and which screenshot to look at when the text may be wrong. It can rewind to try again,
-and `play end` accepts a verdict only with evidence on the final input line, then writes
-`report.md` and `evidence.json`. The replay check, video and the skill come next (1.7–1.8).
+Phase 1's goal is "Claude proves level 1 is completable". **It's met:**
+- **The run:** following the `playtest` skill from a cold start, Claude collected all 21 coins
+  in Godot's official 2D platformer demo, using 87 of its 120 commands.
+- **The verdict:** `play end` accepted the pass on a machine check (the game's coin counter
+  reached 21).
+- **The replay:** it replayed all 3,382 frames identically, rendered and compared frame by
+  frame, then made the captioned video now at the top of the README.
 
-Status on 2026-10-18: all tests pass on Godot 4.7.2; the play, bridge and view tests also pass on 4.3.
-Items 1.1–1.5 are committed on `phase-1`; 1.6 is not committed yet.
+Claude can now:
+- start a Godot game frozen and read it as text;
+- play it from the shell one short command at a time;
+- be told about errors, crashes, hangs and lost players, and which screenshot to read when the
+  text may be wrong;
+- rewind and try again;
+- end with a verdict that `play end` checks, confirms by replay, and turns into a report and a video.
+
+Status on 2026-10-18: all 130 tests pass on Godot 4.7.2, and the 87 play, bridge and view tests on 4.3.
+Items 1.1–1.6 are committed on `phase-1`; 1.7 and 1.8 aren't committed yet.
 
 ## What exists now
 
@@ -27,8 +36,12 @@ ghostlap play end --verdict pass --why "node('Goal').reached became true at f=98
 | Views (Godot) | `addons/ghostlap/play/observe.gd` | `look` as compact text: `ui`, `player`, `near`, `map`, `grid`, `state`, `game` |
 | Client | `cli/src/ghostlap/play/bridge_client.py` | Launch (headless, window or offscreen), attach, one JSON-line request per call |
 | Session | `cli/src/ghostlap/play/session.py` | Goal file, budget, held inputs, the input line, events |
-| CLI | `cli/src/ghostlap/play/commands.py` | `ghostlap play start/look/step/until/eval/note/rewind/config/status/end/kill` |
+| CLI | `cli/src/ghostlap/play/commands.py` | `ghostlap play preflight/start/look/step/until/eval/note/rewind/config/status/end/replay/video/kill` |
 | Verdict | `cli/src/ghostlap/play/verdict.py` | The rules `end` enforces, the final input line, `evidence.json`, `report.md` |
+| Replay | `cli/src/ghostlap/play/replay.py` | The replay check, `play replay`, `play video` (Movie Maker + ffmpeg); also drives `rewind` |
+| Video HUD (Godot) | `addons/ghostlap/play/hud.gd` | The video's captions: goal, held keys, notes, incidents, verdict |
+| Preflight | `cli/src/ghostlap/play/preflight.py` | Load check, determinism smoke, code checks; cached |
+| Skill | `plugin/skills/playtest/SKILL.md` | How Claude plays: understand, goal, plan, play, verdict, report |
 | Incidents (Godot) | `addons/ghostlap/play/incidents.gd` | Per-frame rules: error, out_of_bounds, player_lost, stuck, death |
 | Shots (Godot) | `addons/ghostlap/play/shots.gd` | Screenshot checkpoints: captures on events, new-UI detection, rolling rotation |
 | Settings | `cli/src/ghostlap/play/config.py` | `play config` keys and where each value came from |
@@ -229,6 +242,70 @@ Every `--evidence` frame must be on the final line: a frame after its end is ref
 
 **A bug from 1.4, found here:** error incidents carry their own `kind` (script or engine), and it overwrote `kind: incident` in `events.jsonl`. So `status` didn't list error incidents in its recent events, and the new fail rule couldn't see them. The field is now `error_kind`.
 
+## 1.7 — Replay check and captioned video
+
+**The replay check.**
+- `play end` replays the final input line in the session's display class (headless, or rendered when the session rendered) and compares every frame's state hash.
+- The result is `exact`, or `diverged at f=N` with the first player field that differs, or "a node other than the player", plus likely causes from the cached preflight.
+- It goes into `replay.json`, `evidence.json` and the report.
+- **A fail is confirmed** when the replay hits the same incident type within 2 frames. A crash or hang is confirmed by the replay crashing or hanging too, since their frame is only known roughly. Otherwise the verdict is `fail (unconfirmed)`.
+- A session that crashed or hung keeps the crashing command's inputs up to the last progress frame, and the replay runs 10 s past it.
+
+**The bridge replays, not the v1 runner.** The design planned a `replay` plan type in the feel runner, but that runner presses actions with `Input.action_press`, which `_process` code never sees as just pressed. Replaying through the bridge uses the session's own input path. `rewind` uses the same `replay.drive`.
+
+**`play replay [session] [--window|--headless] [--fast]`** is the exact repro: real time in a window by default, compared with `hashes.jsonl`.
+
+**`play video [session] [--full]`, or `end --video`:**
+- A Movie Maker replay with the caption HUD (`hud.gd`, given to the bridge as `--hud=<json>`):
+  - the goal and its description;
+  - a clock;
+  - chips for the inputs held (a tap stays up 8 frames, so it's visible at 30 fps);
+  - each note for 3 s from its frame;
+  - an incident or "goal met" flash for 2 s;
+  - the verdict banner from the final frame on.
+- **Holding the final frame:** Movie Maker only writes frames it renders, and the bridge is blocked inside the final frame when it quits. So after the line ends, the replay pauses the game tree and runs 2 s more, rendering the frozen final frame with the banner. An ffmpeg `tpad` hold added nothing.
+- **Highlights:** sessions over 30 s keep ±3 s around each note, incident, evidence frame and the success frame, plus the start and end (`--full` keeps everything).
+- **Output:** `playtest.mp4`, a GIF stepped down until it's ≤ 8 MB, and `playtest-sheet.png` (24 frames across the video, so Claude can check it). The AVI is deleted.
+
+## 1.8 — Preflight, the skill, and a real game
+
+**`ghostlap play preflight [--scene] [--force]`**:
+- **Boots:** boots the start scene headless twice for 300 frames. That checks it loads (no bug incident in 60 frames) and is deterministic (the two boots' hashes match).
+- **Code scan:** text-scans the project's scripts and scenes, outside `addons/`, for:
+  - raw-key input (`input_style`);
+  - nondeterminism (`randomize()`, unseeded `RandomNumberGenerator`, clocks, threads, physics on a separate thread);
+  - render-dependent nodes;
+  - pause and time-scale use;
+  - `get_playback_position()`.
+- It's a text scan rather than graph queries, so it works before `ghostlap scan`.
+- **Cache:** `.ghostlap/preflight.json`, keyed by a fingerprint of scripts, scenes and `project.godot`.
+- **On `play start`:** prints its warnings, or "not run for this version", and warns about a headless session in a game with render-dependent logic.
+- **`play start` now imports the project** (`godot --import`) when `.godot/` is missing. A fresh clone with textures didn't load before.
+
+**The skill**, `plugin/skills/playtest/SKILL.md`:
+- the rules (no game edits, read-only eval, no pass without evidence, blocked isn't fail, report bugs rather than fix them);
+- the six steps, with the commands and what each output means;
+- a list of what isn't built yet, so the skill doesn't promise it.
+
+**The playthrough.** Godot's official 2D platformer demo (godotengine/godot-demo-projects, MIT). The level has no win state, so the goal was "collect all 21 coins", checked by the pause menu's coin counter. From a cold start, following the skill:
+1. **Understand:** scan, detect (player, actions and enemy found correctly), preflight (clean).
+2. **Goal:** found the counter in the code and counted the coins with `eval`.
+3. **Plan and measure:** the first jump was ignored, correctly: the player was still falling from its spawn point, and this game only jumps from the floor.
+4. **The route:** the elevators that make the upper level reachable are in `level.tscn`. One screenshot, requested and noted, fixed a misread of the 64 px map.
+5. **Result:** `pass (machine-checked)`; replay exact (rendered, 3,382 frames in 60 s); 87/120 commands, 3,502 frames, ~7.4k tokens of CLI output.
+
+**Bugs the playthrough found, all fixed:**
+
+| Bug | Since | Fix |
+|---|---|---|
+| Sessions ran at `--fixed-fps 60` whatever the project's tick rate. This game runs physics at 120, so each frame was two ticks, and the report's times and the video speed were off by 2×. Replays used 60 too, so they still matched | 1.3 | Sessions run at the project's `physics_ticks_per_second`, stored as `fps` in `session.json`. Rewind, replay and video reuse it, and older sessions fall back to 60 |
+| In a window, Godot releases every pressed input when the window gains or loses focus (X11). Holds vanished behind the input line: the player stopped while the session said `move_right` was held | 1.2 | The bridge notes which injected holds are down when it freezes. When the next step starts, any released during the freeze are pressed again on that step's first frame. The step reports `input_lost`, the CLI warns and records a release+press on that frame (same frame: just_pressed true, just_released false, as live). The bridge's no-focus flag doesn't stop the window getting focus |
+| `stuck` compared the two ends of its 90-frame window, so walking right and then back left fired it | 1.4 | The window restarts whenever the held direction changes |
+| A `look` after any incident crashed: `shot_hint` iterated a look's `incidents`, which is a count | 1.5 | Only a step's list is iterated |
+| `step` / `until` had no `--view` | 1.3 | Added |
+
+Rewinding past the lost hold reported `diverged at f=1359`, honestly. The line after f=1358 says `move_left` was held, but the live game didn't see it. The replay followed the line and still reached the same state at f=2755.
+
 ## Engine findings
 
 | Finding | Where | Handling |
@@ -242,6 +319,10 @@ Every `--evidence` frame must be on the final line: a frame after its end is ref
 | `OS.crash()` / a fatal signal prints the message first, then a long C++ backtrace | 1.4 | Crash evidence is a filtered log summary |
 | A rendered window that is hidden or on a locked screen advances very slowly | 1.4 | Hang detection requires a busy CPU in rendered modes |
 | PyYAML (YAML 1.1) reads a bare `on:` key as `true` | 1.5 | The goal loader maps `true` back to `shots.on` |
+| A window that gains or loses focus makes Godot release every pressed input, even with `WINDOW_FLAG_NO_FOCUS` set after start (the window still got focus) | 1.8 | The bridge presses lost holds again after a freeze and records it (above) |
+| `--fixed-fps` must equal the project's physics tick rate for one frame to be one tick | 1.8 | Sessions read `physics_ticks_per_second` |
+| `Input.release_pressed_events()` isn't exposed to scripts | 1.8 | Tests simulate a focus release with `Input.action_release()` |
+| Movie Maker doesn't write the frame the bridge is blocked in when it quits | 1.7 | The video pauses the game tree and runs on 2 s, so the final frame is rendered |
 
 ## Code review fixes (before committing 1.3)
 
@@ -266,15 +347,22 @@ Every `--evidence` frame must be on the final line: a frame after its end is ref
 | `test_bridge.py` (11) | Frozen clock, input timing in every callback, hitstop/pause/reload, determinism on all examples, refused requests |
 | `test_observe.py` (10) | Every view on fixtures (tile platformer, Sokoban, card battle), screenshot, window == headless, detect's default views |
 | `test_play_cli.py` (6) | The long level from the shell + replay, holds and taps, write guard, budgets, reload, bad goal, RNG calls |
-| `test_incidents.py` (17) | Each planted incident fires (error, crash, hang, out of bounds, player lost, stuck, 3 deaths), an incident ends `until`, a clean run fires none; warnings, no-player games, load errors, error floods and repeated deaths |
-| `test_verdict.py` (8) | Pass refused off the final line and accepted on it, rewind replays inputs and eval writes to the same hash, fail needs a bug incident on the final line, signals vs `fail_if`, visual pass and `pre_verdict`, headless pass without `success`, repro phrases, `split_line` |
+| `test_incidents.py` (18) | Each planted incident fires (error, crash, hang, out of bounds, player lost, stuck, 3 deaths), an incident ends `until`, a clean run fires none; warnings, no-player games, load errors, error floods and repeated deaths |
+| `test_verdict.py` (9) | Pass refused off the final line and accepted on it, rewind replays inputs and eval writes to the same hash, fail needs a bug incident on the final line, signals vs `fail_if`, visual pass and `pre_verdict`, headless pass without `success`, repro phrases, `split_line` |
+| `test_replay.py` (14) | Exact replay of a pass and of `play replay`, divergence located (`chaos.tscn`), fails confirmed (error, crash), confirmation rules, highlight windows, the video (HUD data, the 2 s hold, frame count), every example replays exactly, re-pressed holds, the project tick rate |
+| `test_preflight.py` (2) | Code findings (comments, seeded generators and `addons/` skipped), load and determinism checks, the cache and its invalidation, `start`'s preflight line |
 | `test_shots.py` (17) | Each capture trigger and hint on its fixture, none on a flat run, toast/flash ignored, ui settle and flush, rolling rotation with a live change and a pinned shot, settings layers and errors, headless, the real hook command |
 
 ## Not done yet, and known issues
 
-- **Planned for later items:**
-  - the replay check and captioned video (1.7). Until then a `fail` is unconfirmed, and the report points at `inputs.jsonl` instead of a replay command;
-  - the `playtest` skill (1.8).
+- **Next (phase 2):**
+  - `--save-test` and `ghostlap test` (2.1);
+  - `play watch`, `click`, `type` and `visible_text` (2.5);
+  - `sweep`;
+  - `goals suggest`;
+  - `play issue`.
+- **Lost holds mid-run:** a focus change while frames run (not while frozen) still releases holds unnoticed. The bridge only checks after a freeze, because a game may release an action itself. The replay check would show a divergence. Headless avoids it, or xvfb (`--offscreen`) when installed.
+- **The Read hook only runs where the plugin is installed:** the playthrough read 2 screenshots, but `status` says "0 read" because the hook wasn't active in this shell.
 - **Inputs not built yet:** `--axis`, `--aim`, `--look`.
 - **Expression helpers not built yet:** `watch` and `visible_text` (2.5). So a `fail` can't yet rest on a watch-backed contradiction.
 - **`state.jsonl`** has the bridge's own format (`f`, `pos`, `vel`, `floor`), not the v1 Sampler's; 4.4 (passive feel metrics) adapts one to the other.
@@ -287,5 +375,5 @@ Every `--evidence` frame must be on the final line: a frame after its end is ref
   - CI only runs on `main` and PRs, so `phase-1` pushes aren't tested. The last `main` run failed on the 4.3 jobs for an unknown reason (the logs need auth).
   - `test_clip_renders_now_vs_proposal` (feel) takes about 10 minutes locally when its window is hidden. It renders a real window, unlike the play tests.
 - **`trapped` and `softlock`** incidents are phase 2 (2.6); the `perf` signal isn't built.
-- **The Stop hook** (end or explain an open session) is listed with the hooks in design §5 but isn't part of 1.5; it isn't built.
-- **Next:** item 1.7, the replay check and the captioned video.
+- **The Stop hook** (end or explain an open session) is listed with the hooks in design §5; it isn't built.
+- **The playthrough session** in the README ran before the tick-rate fix, at 60 frames/s on a 120-tick game (two ticks per frame). Its numbers are frames at 60/s.

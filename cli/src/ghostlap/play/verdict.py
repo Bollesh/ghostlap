@@ -8,8 +8,8 @@ reproduces.
              success expression, --evidence naming a shot taken at or after the last input
              and cited with `note --saw` (visual). An eval write makes it `pass (assisted)`.
     fail     a bug incident on the final line, or one of the goal's `fail_if` incidents.
-             (Watch-backed contradictions come with `play watch`, item 2.5.) Confirmed only by
-             the replay check (item 1.7), so it's recorded unconfirmed for now.
+             (Watch-backed contradictions come with `play watch`, item 2.5.) Confirmed when the
+             replay check (replay.py) hits the same incident; otherwise `fail (unconfirmed)`.
     blocked  always accepted: budget used up, no route found, a missing capability.
 """
 
@@ -21,7 +21,8 @@ import time
 from pathlib import Path
 
 from ..project import GhostlapError
-from .session import Session, read_jsonl
+from . import replay
+from .session import Session, fps, read_jsonl
 
 BUG_HINT = "error, crash, hang, out_of_bounds, player_lost"
 TAP_FRAMES = 6   # a press shorter than this reads as a tap in the repro steps
@@ -116,7 +117,7 @@ def check(s: Session, verdict: str, evidence: list[str] | None, shoot=None) -> d
                           + ". A contradiction you can show with watches needs `play watch` (not built yet). "
                             "If the game isn't shown to be wrong, the verdict is blocked.")
         out["basis"] = "incident"
-        out["confirmed"] = None   # the replay check (item 1.7) confirms it
+        out["confirmed"] = None   # set by confirm() after the replay check
         for e in bad:
             items.append({"f": e["f"], "what": "incident", "type": e["type"], "why": e.get("why", ""),
                           **({"shot": s.rel(e["shot"])} if e.get("shot") else {})})
@@ -151,7 +152,37 @@ def _pre_verdict(s: Session, shots: list[dict], cited: dict, last_in: int, shoot
 
 # ------------------------------------------------------------------ artifacts
 
-def write(s: Session, res: dict, why: str, samples: list[dict] | None) -> None:
+def confirm(res: dict, rep: dict | None) -> None:
+    """A fail is confirmed when the replay hits one of its incidents again."""
+    if res["basis"] != "incident":
+        return
+    if rep is None:
+        res["verdict"] = "fail (unconfirmed)"
+        return
+    hit = [i for i in res["items"] if i["what"] == "incident" and replay.confirms(rep, i)]
+    res["confirmed"] = bool(hit)
+    if not hit:
+        res["verdict"] = "fail (unconfirmed)"
+
+
+def hud(s: Session, res: dict, why: str) -> tuple[dict, list[int]]:
+    """The video's caption data (hud.gd) and the frames worth keeping in a highlight video."""
+    m = s.meta
+    goal = m.get("goal") or {}
+    final, _ = split_line(read_jsonl(s.dir / "events.jsonl"))
+    notes = [{"f": e["f"], "text": e["text"]} for e in final if e["kind"] == "note"]
+    incs = [{"f": e["f"], "type": e["type"], "why": e.get("why", "")} for e in final if e["kind"] == "incident"]
+    data = {"goal": goal.get("goal") or m["scene"], "describe": goal.get("describe", ""), "verdict": res["verdict"],
+            "basis": res["basis"], "why": why, "tps": fps(m), "final": res["final_frame"],
+            "inputs": read_jsonl(s.dir / "inputs.jsonl"), "notes": notes, "incidents": incs,
+            "goal_met_at": m.get("goal_met_at")}
+    moments = [n["f"] for n in notes] + [i["f"] for i in incs] + [it["f"] for it in res["items"]]
+    if m.get("goal_met_at") is not None:
+        moments.append(m["goal_met_at"])
+    return data, moments
+
+
+def write(s: Session, res: dict, why: str, samples: list[dict] | None, rep: dict | None = None) -> None:
     """evidence.json, state.jsonl (when the game was still running) and report.md."""
     if samples is not None:
         with open(s.dir / "state.jsonl", "w") as fh:
@@ -173,10 +204,26 @@ def write(s: Session, res: dict, why: str, samples: list[dict] | None) -> None:
           "evidence": res["items"]}
     if "confirmed" in res:
         ev["confirmed"] = res["confirmed"]
+    if rep is not None:
+        ev["replay"] = rep
     if res.get("cheats"):
         ev["cheats"] = res["cheats"]
     (s.dir / "evidence.json").write_text(json.dumps(ev, indent=1))
-    (s.dir / "report.md").write_text(report(s, res, why))
+    (s.dir / "report.md").write_text(report(s, res, why, rep))
+
+
+def load(s: Session) -> tuple[dict, str, dict | None]:
+    """(res, why, replay check) of an ended session, from its evidence.json."""
+    p = s.dir / "evidence.json"
+    if not p.is_file():
+        raise GhostlapError(f"session {s.id} has no evidence.json: end it first (`ghostlap play end --verdict …`)")
+    ev = json.loads(p.read_text())
+    res = {"verdict": ev["verdict"], "basis": ev["basis"], "items": ev["evidence"], "final_frame": ev["final_line"]["ends_at"],
+           "last_input": ev["final_line"]["last_input"]}
+    for k in ("confirmed", "cheats"):
+        if k in ev:
+            res[k] = ev[k]
+    return res, ev["why"], ev.get("replay")
 
 
 def repro_steps(inputs: list[dict], tps: int) -> list[str]:
@@ -184,15 +231,27 @@ def repro_steps(inputs: list[dict], tps: int) -> list[str]:
     def t(f: int) -> str:
         return f"{f / tps:.2f}"
 
+    def name_of(e: dict) -> str:
+        return e.get("action") or f"key {e.get('key')}"
+
+    # a release and a press of the same input on one frame (a hold the bridge pressed again after
+    # a focus change) is one continuous hold
+    skip = set()
+    for i in range(len(inputs) - 1):
+        a, b = inputs[i], inputs[i + 1]
+        if "mouse" not in a and not a["pressed"] and b.get("pressed") and a["f"] == b["f"] and name_of(a) == name_of(b):
+            skip |= {i, i + 1}
     down: dict[str, int] = {}
     spans = []
-    for e in inputs:
+    for i, e in enumerate(inputs):
+        if i in skip:
+            continue
         if "mouse" in e:
             if e["pressed"]:
                 x, y = e["mouse"]
                 spans.append((e["f"], f"click at ({x:g}, {y:g}) at {t(e['f'])} s"))
             continue
-        name = e.get("action") or f"key {e.get('key')}"
+        name = name_of(e)
         if e["pressed"]:
             down[name] = e["f"]
         elif name in down:
@@ -203,16 +262,19 @@ def repro_steps(inputs: list[dict], tps: int) -> list[str]:
     return [p for _, p in sorted(spans, key=lambda x: x[0])]
 
 
-def report(s: Session, res: dict, why: str) -> str:
+def report(s: Session, res: dict, why: str, rep: dict | None = None, video: dict | None = None) -> str:
     m = s.meta
     goal = m.get("goal") or {}
-    tps = int(m.get("physics_tps") or 60)
+    tps = fps(m)
     events = read_jsonl(s.dir / "events.jsonl")
     final, abandoned = split_line(events)
     inputs = read_jsonl(s.dir / "inputs.jsonl")
     basis = {"machine": f"machine-checked: `{goal.get('success')}` true at f={m.get('goal_met_at')}",
              "visual": "visual: a cited screenshot after the last input",
-             "incident": "a bug incident on the final input line; not yet confirmed by a replay (item 1.7)",
+             "incident": "a bug incident on the final input line, " + (
+                 "confirmed: the replay hit it again" if res.get("confirmed") else
+                 "unconfirmed: the replay didn't hit it again" if res.get("confirmed") is False else
+                 "unconfirmed: no replay check ran"),
              "blocked": "not a game bug: the session couldn't decide"}[res["basis"]]
     out = [f"# Playtest: {goal.get('goal') or m['scene']} — {res['verdict'].upper()}", ""]
     if goal.get("describe"):
@@ -222,6 +284,8 @@ def report(s: Session, res: dict, why: str) -> str:
             f"**Session:** `{s.id}` · {m['scene']} · Godot {m.get('godot', '?')} · {tps} tps · seed {m['seed']} · "
             f"{m['display']} · {time.strftime('%Y-%m-%d %H:%M', time.localtime(m['created']))}", ""]
 
+    if video and video.get("gif"):
+        out += [f"![playtest]({Path(video['gif']).name})", ""]
     out += ["## Evidence", ""]
     if not res["items"]:
         out.append("None given.")
@@ -251,7 +315,25 @@ def report(s: Session, res: dict, why: str) -> str:
         out.append(f"No inputs: the game ran by itself; {end}.")
     out += ["",
             f"Exact script: `inputs.jsonl` ({len(inputs)} event{'s' if len(inputs) != 1 else ''}, frame-exact at --fixed-fps {tps}). "
-            "The replay command comes with item 1.7."]
+            f"Watch it: `ghostlap play replay {s.id}` (real time, in a window)."]
+    out += ["", "## Replay check", ""]
+    if rep is None:
+        out.append("Not run.")
+    else:
+        line = f"**{rep['result']}** · {rep['mode']} replay of {rep['frames']} frames in {rep['seconds']} s"
+        if rep["result"] == "exact":
+            line += ": every frame's state hash matches the session, so this run can become a test."
+        elif rep["result"] == "diverged":
+            line += (f": the first different frame is f={rep['diverged_at']} ({rep['field']}). "
+                     "The game isn't deterministic from these inputs, so no test can be made from it.")
+            if rep.get("likely_causes"):
+                line += " Likely causes (preflight): " + "; ".join(rep["likely_causes"])
+        else:
+            line += f": {rep.get('why', '')}"
+        out.append(line)
+        if video:
+            out.append(f"\nVideo: `{Path(video['mp4']).name}`, `{Path(video['gif']).name}`"
+                       + (f", contact sheet `{Path(video['sheet']).name}`" if video.get("sheet") else ""))
 
     incs = [e for e in final if e["kind"] == "incident"]
     out += ["", "## Incidents", ""]

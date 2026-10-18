@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -55,13 +56,17 @@ class Bridge:
 
     @classmethod
     def launch(cls, godot: str, project_dir: Path, scene: str, session_dir: Path, *, seed: int = 0,
-               physics_tps: int = 60, display: str = "headless", profile: dict | None = None,
-               timeout: float = 60.0, extra_args: list[str] | None = None, shots: dict | None = None) -> "Bridge":
+               physics_tps: int | None = None, display: str = "headless", profile: dict | None = None,
+               timeout: float = 60.0, extra_args: list[str] | None = None, shots: dict | None = None,
+               hud: Path | None = None) -> "Bridge":
         """display: "headless" (fastest, no screenshots), "window" (visible; desktop input is
         ignored), or "offscreen" (xvfb-run when available, else a window). shots: capture
-        settings from frame 0 on ({every, keep, on, width}, see shots.gd)."""
+        settings from frame 0 on ({every, keep, on, width}, see shots.gd). hud: the caption
+        HUD's JSON for a session video (hud.gd)."""
         session_dir = Path(session_dir).resolve()
         session_dir.mkdir(parents=True, exist_ok=True)
+        if physics_tps is None:
+            physics_tps = project_tps(project_dir)
         for stale in ("bridge.json", "bridge_error.txt"):
             (session_dir / stale).unlink(missing_ok=True)
         if display not in ("headless", "window", "offscreen"):
@@ -77,6 +82,8 @@ class Bridge:
                 f"--session={session_dir}", f"--scene={scene}", f"--seed={seed}"]
         if shots is not None:
             cmd.append("--shots=" + json.dumps(shots, separators=(",", ":")))
+        if hud is not None:
+            cmd.append(f"--hud={Path(hud).resolve()}")
         if profile is not None:
             (session_dir / "profile.json").write_text(json.dumps(profile, indent=1))
             cmd.append(f"--profile={session_dir / 'profile.json'}")
@@ -224,6 +231,17 @@ class Bridge:
     def samples(self, start: int = 0) -> list[dict]:
         """The player per frame from `start` on: {pos, vel?, floor?}, {} on frames without one."""
         return self.request("samples", **{"from": start})["result"]
+
+
+def project_tps(project_dir: Path) -> int:
+    """The project's physics ticks per second. Sessions run --fixed-fps at this rate, so one
+    frame is one physics tick (design §6.2)."""
+    try:
+        text = (Path(project_dir) / "project.godot").read_text(errors="replace")
+    except OSError:
+        return 60
+    m = re.search(r"^\[physics\][^\[]*?^common/physics_ticks_per_second\s*=\s*(\d+)", text, re.M | re.S)
+    return int(m.group(1)) if m else 60
 
 
 def _cpu_seconds(pid: int) -> float | None:

@@ -171,3 +171,11 @@ def test_cli_prints_incidents_and_stops_until(proj):
     assert "until: stopped by an incident (error)" in out
     assert "INCIDENT f=" in out and "error [bug]" in out and "plant.gd:" in out
     _cli(proj, "play", "end", "--verdict", "fail", "--why", "planted error")
+
+
+def test_turning_back_is_not_stuck(run):
+    """Right, then back left past the start: the 90-frame window must restart with the direction,
+    or some frame compares two equal positions (found playing the Godot platformer demo)."""
+    b, incs = run("clean", 60, hold="move_right")
+    res = b.step(120, [{"at": 1, "action": "move_right", "pressed": False}, {"at": 1, "action": "move_left"}])
+    assert incs == [] and res["incidents"] == []

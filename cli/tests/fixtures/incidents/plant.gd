@@ -42,3 +42,8 @@ func _physics_process(_delta: float) -> void:
 			get_node(target).show()
 		"change":
 			get_tree().change_scene_to_file(target)
+		"chaos":
+			# an unseeded generator: the replay check can't reproduce this frame
+			var rng := RandomNumberGenerator.new()
+			rng.randomize()
+			(get_node(target) as Node2D).position.x += rng.randf_range(1.0, 100.0)
