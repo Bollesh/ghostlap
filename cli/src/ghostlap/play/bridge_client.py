@@ -221,6 +221,10 @@ class Bridge:
     def hashes(self, start: int = 0) -> list[str]:
         return self.request("hashes", **{"from": start})["result"]
 
+    def samples(self, start: int = 0) -> list[dict]:
+        """The player per frame from `start` on: {pos, vel?, floor?}, {} on frames without one."""
+        return self.request("samples", **{"from": start})["result"]
+
 
 def _cpu_seconds(pid: int) -> float | None:
     """User+system CPU time of a process (Linux /proc), or None."""

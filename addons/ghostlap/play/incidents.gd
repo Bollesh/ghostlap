@@ -254,7 +254,7 @@ func _check_errors(frame: int, out: Array) -> void:
 		var inc := _fire(frame, "error", why, {"count": 1})
 		for k in ["kind", "file", "line", "function"]:
 			if e.has(k):
-				inc[k] = e[k]
+				inc["error_kind" if k == "kind" else k] = e[k]   # `kind` names the event in events.jsonl
 		_errors[key] = inc
 		out.append(inc)
 

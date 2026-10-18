@@ -1,12 +1,14 @@
-# Phase 1 progress: items 1.1–1.5
+# Phase 1 progress: items 1.1–1.6
 
-Phase 1's goal is "Claude proves level 1 is completable". After items 1.1–1.4, Claude can start a
-Godot game frozen, read it as text, play it from the shell one short command at a time, leave
-behind an input line that replays exactly, and is told when the game errors, crashes, hangs or
-loses the player. Screenshot checkpoints, verdict rules, video and the skill come next (1.5–1.8).
+Phase 1's goal is "Claude proves level 1 is completable". After items 1.1–1.6, Claude can start a
+Godot game frozen, read it as text, play it from the shell one short command at a time, and leave
+behind an input line that replays exactly. It is told when the game errors, crashes, hangs or loses
+the player, and which screenshot to look at when the text may be wrong. It can rewind to try again,
+and `play end` accepts a verdict only with evidence on the final input line, then writes
+`report.md` and `evidence.json`. The replay check, video and the skill come next (1.7–1.8).
 
-Status on 2026-10-17: all tests pass on Godot 4.7.2; the play, bridge and view tests also pass on 4.3.
-Items 1.1–1.3 are committed on `phase-1`; 1.4 is not committed yet.
+Status on 2026-10-18: all tests pass on Godot 4.7.2; the play, bridge and view tests also pass on 4.3.
+Items 1.1–1.5 are committed on `phase-1`; 1.6 is not committed yet.
 
 ## What exists now
 
@@ -25,7 +27,8 @@ ghostlap play end --verdict pass --why "node('Goal').reached became true at f=98
 | Views (Godot) | `addons/ghostlap/play/observe.gd` | `look` as compact text: `ui`, `player`, `near`, `map`, `grid`, `state`, `game` |
 | Client | `cli/src/ghostlap/play/bridge_client.py` | Launch (headless, window or offscreen), attach, one JSON-line request per call |
 | Session | `cli/src/ghostlap/play/session.py` | Goal file, budget, held inputs, the input line, events |
-| CLI | `cli/src/ghostlap/play/commands.py` | `ghostlap play start/look/step/until/eval/note/status/end/kill` |
+| CLI | `cli/src/ghostlap/play/commands.py` | `ghostlap play start/look/step/until/eval/note/rewind/config/status/end/kill` |
+| Verdict | `cli/src/ghostlap/play/verdict.py` | The rules `end` enforces, the final input line, `evidence.json`, `report.md` |
 | Incidents (Godot) | `addons/ghostlap/play/incidents.gd` | Per-frame rules: error, out_of_bounds, player_lost, stuck, death |
 | Shots (Godot) | `addons/ghostlap/play/shots.gd` | Screenshot checkpoints: captures on events, new-UI detection, rolling rotation |
 | Settings | `cli/src/ghostlap/play/config.py` | `play config` keys and where each value came from |
@@ -195,6 +198,37 @@ The bridge captures freely; Claude reads a shot only when a response carries a `
 
 Other changes: deaths now carry `at` (where the player died) and `repeat_of`. `look` applies the session's `look.*` settings. Step output lists new UI. Headless sessions say "screenshots: off" and give no hints.
 
+## 1.6 — Verdict rules, the input line and the report
+
+`play end` checks the verdict before it closes the game. A refused verdict leaves the session running, logs a `refused` event and says what's missing:
+
+| Verdict | Accepted when | Recorded as |
+|---|---|---|
+| `pass` | The goal's `success` was true on a frame of the final input line | `pass (machine-checked)` |
+| `pass`, no `success` | `--evidence` names a shot taken at or after the last input, and a `note --saw` on the final line cites it. Otherwise the refusal carries a `pre_verdict` hint with a fresh shot of the frozen frame | `pass (visual)` |
+| `pass` with an eval write on the final line | As above | `pass (assisted)` |
+| `fail` | A bug incident on the final line, or one of the goal's `fail_if` incidents (`incident.stuck`). Signals alone are refused | `fail`, unconfirmed until the replay check (1.7) |
+| `blocked` | Always | not a game bug |
+
+Every `--evidence` frame must be on the final line: a frame after its end is refused.
+
+**`play rewind --to F`** restarts the game in the session's display mode and replays the input line up to F in one fast pass, with captures off:
+- Eval writes are replayed on their frames, after that frame runs, as they happened.
+- The replay's state hashes are compared with the first run frame by frame. A mismatch is reported as the first frame that diverged.
+- Inputs after F move to `attempts/<n>.jsonl`. Shots after F and the old `godot.log` move to `attempts/<n>/`. Eval writes after F are dropped.
+- Held inputs at F are rebuilt from the line, and a goal met after F is cleared.
+- Replayed frames don't count against the frame budget. The rewind counts as a command.
+
+**The final line in `events.jsonl`:** a rewind to R abandons every earlier event after R. `verdict.split_line` gives the final events plus one list per attempt. Verdicts, the report's timeline and its incidents use only the final line.
+
+**`end` writes:**
+- `evidence.json`: verdict, basis (machine, visual, incident or blocked), where the line ends and its last input, and each evidence item with the player's state on that frame. Fails carry `confirmed: null` until 1.7. Cited shots are pinned.
+- `state.jsonl`: the player's `pos`, `vel` and `floor` on every frame, sampled by the bridge (new `samples` command).
+- `report.md`: verdict and basis, why, session facts, evidence with embedded shots, repro steps, incidents, attempts, timeline and budget, including shots read.
+  - Repro steps compress the line into phrases: `hold move_right 0.02–2.00 s`, `tap jump at 1.40 s`, `click at (10, 20) at 2.17 s`.
+
+**A bug from 1.4, found here:** error incidents carry their own `kind` (script or engine), and it overwrote `kind: incident` in `events.jsonl`. So `status` didn't list error incidents in its recent events, and the new fail rule couldn't see them. The field is now `error_kind`.
+
 ## Engine findings
 
 | Finding | Where | Handling |
@@ -233,16 +267,18 @@ Other changes: deaths now carry `at` (where the player died) and `repeat_of`. `l
 | `test_observe.py` (10) | Every view on fixtures (tile platformer, Sokoban, card battle), screenshot, window == headless, detect's default views |
 | `test_play_cli.py` (6) | The long level from the shell + replay, holds and taps, write guard, budgets, reload, bad goal, RNG calls |
 | `test_incidents.py` (17) | Each planted incident fires (error, crash, hang, out of bounds, player lost, stuck, 3 deaths), an incident ends `until`, a clean run fires none; warnings, no-player games, load errors, error floods and repeated deaths |
+| `test_verdict.py` (8) | Pass refused off the final line and accepted on it, rewind replays inputs and eval writes to the same hash, fail needs a bug incident on the final line, signals vs `fail_if`, visual pass and `pre_verdict`, headless pass without `success`, repro phrases, `split_line` |
 | `test_shots.py` (17) | Each capture trigger and hint on its fixture, none on a flat run, toast/flash ignored, ui settle and flush, rolling rotation with a live change and a pinned shot, settings layers and errors, headless, the real hook command |
 
 ## Not done yet, and known issues
 
 - **Planned for later items:**
-  - verdict rules, including the `pre_verdict` hint and `report.md` (1.6), since `end` records the verdict but doesn't check it yet;
-  - the replay check and captioned video (1.7);
+  - the replay check and captioned video (1.7). Until then a `fail` is unconfirmed, and the report points at `inputs.jsonl` instead of a replay command;
   - the `playtest` skill (1.8).
 - **Inputs not built yet:** `--axis`, `--aim`, `--look`.
-- **Expression helpers not built yet:** `watch` and `visible_text` (2.5).
+- **Expression helpers not built yet:** `watch` and `visible_text` (2.5). So a `fail` can't yet rest on a watch-backed contradiction.
+- **`state.jsonl`** has the bridge's own format (`f`, `pos`, `vel`, `floor`), not the v1 Sampler's; 4.4 (passive feel metrics) adapts one to the other.
+- **`play rewind`** replays at full speed in the session's display mode. A rendered rewind still renders every frame; replaying headless and switching back isn't possible in one process.
 - **Moved:**
   - the `hotspots` view, to 2.5;
   - the Lantern Hop (godogen) check, to after phase 1.
@@ -252,4 +288,4 @@ Other changes: deaths now carry `at` (where the player died) and `repeat_of`. `l
   - `test_clip_renders_now_vs_proposal` (feel) takes about 10 minutes locally when its window is hidden. It renders a real window, unlike the play tests.
 - **`trapped` and `softlock`** incidents are phase 2 (2.6); the `perf` signal isn't built.
 - **The Stop hook** (end or explain an open session) is listed with the hooks in design §5 but isn't part of 1.5; it isn't built.
-- **Next:** item 1.6, verdict rules and `report.md`.
+- **Next:** item 1.7, the replay check and the captioned video.

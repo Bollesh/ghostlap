@@ -8,6 +8,8 @@ State lives in .ghostlap/play/<id>/ so every `ghostlap play …` call is a fresh
     last_look.json views last shown, so `step` can collapse what didn't change
     bridge.json    port/token/pid of the running Godot (written by bridge.gd)
     shots/         f<frame>.png captures; keep.txt lists the ones rolling rotation must keep
+    attempts/<n>.jsonl  inputs a `rewind` took off the line; attempts/<n>/ its shots and godot.log
+    hashes.jsonl, state.jsonl, evidence.json, report.md   written by `end` (verdict.py)
 
 .ghostlap/play/active names the session commands act on by default.
 """
@@ -113,6 +115,16 @@ def _hkey(kind: str, name: str) -> str:
     return f"{kind}:{name}"
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
 # ------------------------------------------------------------------ shot hints
 
 HINT_ORDER = ["first_look", "scene_changed", "repeat_death", "expectation_missed", "ui_without_text", "unclassified_nearby"]
@@ -188,36 +200,41 @@ class Session:
                 "hints": {"unknown": [], "unknown_at": None, "scene": None}}
         (d / "session.json").write_text(json.dumps(meta, indent=1))
         (play_dir(project) / "active").write_text(sid)
+        s = cls(project, sid)
         try:
-            bridge = Bridge.launch(godot, project.root, start_scene, d, seed=seed, display=display, profile=profile,
-                                   shots=cfgmod.bridge_shots(cfg))
-        except BridgeError:
-            meta["status"] = "failed_to_start"
-            (d / "session.json").write_text(json.dumps(meta, indent=1))
+            bridge = s._boot(godot, profile, cfgmod.bridge_shots(cfg))
+        except (BridgeError, GhostlapError):
+            s.meta["status"] = "failed_to_start"
+            s.save()
             (play_dir(project) / "active").unlink(missing_ok=True)
             raise
-        s = cls(project, sid)
         s.meta.update({"godot": bridge.info.get("godot"), "physics_tps": bridge.info.get("physics_tps"),
                        "headless": bool(bridge.info.get("headless"))})
         if s.meta["headless"]:
             s.log("shots_unavailable", why="headless: no renderer, so no screenshots or shot hints")
-        if goal.get("success"):
-            try:
-                cfg = bridge.request("config", goal=goal["success"])["result"]
-            except BridgeError as e:
-                bridge.quit()
-                s.meta["status"] = "failed_to_start"
-                s.save()
-                (play_dir(project) / "active").unlink(missing_ok=True)
-                raise GhostlapError(f"the goal's success expression doesn't compile: {e}") from e
-            if cfg.get("goal_error"):
-                s.log("goal_error", error=cfg["goal_error"])
         # errors while the scene loaded (frame 0)
         s.meta["load_incidents"] = bridge.request("incidents")["result"]
         for inc in s.meta["load_incidents"]:
             s.incident(inc)
         s.save()
         return s, s.look_raw()
+
+    def _boot(self, godot: str, profile: dict | None, shots: dict, first: bool = True) -> Bridge:
+        """Launch Godot on the session's start scene, frozen at frame 0, with the goal check on.
+        first: the session's first launch (a rewind's relaunch doesn't log the goal error again)."""
+        m = self.meta
+        bridge = Bridge.launch(godot, self.project.root, m["scene"], self.dir, seed=m["seed"], display=m["display"],
+                               profile=profile, shots=shots)
+        success = (m.get("goal") or {}).get("success")
+        if success:
+            try:
+                res = bridge.request("config", goal=success)["result"]
+            except BridgeError as e:
+                bridge.quit()
+                raise GhostlapError(f"the goal's success expression doesn't compile: {e}") from e
+            if res.get("goal_error") and first:
+                self.log("goal_error", error=res["goal_error"])
+        return bridge
 
     @classmethod
     def active(cls, project: Project, sid: str | None = None, required: bool = True) -> "Session | None":
@@ -267,7 +284,7 @@ class Session:
         counts = self.meta.setdefault("incidents", {})
         counts[inc["type"]] = counts.get(inc["type"], 0) + 1
         with open(self.dir / "events.jsonl", "a") as f:
-            f.write(json.dumps({"f": inc["f"], "kind": "incident", **{k: v for k, v in inc.items() if k != "f"}}) + "\n")
+            f.write(json.dumps({"f": inc["f"], **{k: v for k, v in inc.items() if k != "f"}, "kind": "incident"}) + "\n")
 
     def log(self, kind: str, **data) -> None:
         with open(self.dir / "events.jsonl", "a") as f:
@@ -456,6 +473,78 @@ class Session:
                 ev.append({"at": up, **_event(t.kind, t.what, False)})
             tap_list.append({"kind": t.kind, "what": t.what, "at": t.at, "up": up})
         return ev, want, tap_list
+
+    # ---------------------------------------------------------- rewind (design §3.5)
+
+    def rewind(self, godot: str, to: int) -> dict:
+        """Restart the game and replay the input line (and eval writes) up to frame `to`, then
+        freeze there. Inputs after it move to attempts/<n>.jsonl, and the session goes on from
+        `to` on a new line. Returns {look, attempt, diverged_at}: diverged_at is the first frame
+        whose state hash differs from the first run (None: identical)."""
+        m = self.meta
+        if not 0 <= to <= m["frame"]:
+            raise GhostlapError(f"--to {to}: rewind goes back, to a frame from 0 to {m['frame']}")
+        old = self.bridge
+        before = old.hashes()
+        old.quit()
+        n = len(m.get("attempts") or []) + 1
+        adir = self.dir / "attempts" / str(n)
+        adir.mkdir(parents=True)
+        # the abandoned branch: its inputs, eval writes, shots and log
+        line = read_jsonl(self.dir / "inputs.jsonl")
+        kept, dropped = [e for e in line if e["f"] <= to], [e for e in line if e["f"] > to]
+        write_jsonl(self.dir / "attempts" / f"{n}.jsonl", dropped)
+        write_jsonl(self.dir / "inputs.jsonl", kept)
+        cheats = [c for c in m.get("cheats") or [] if c["f"] <= to]
+        for p in (self.dir / "shots").glob("f*.png"):
+            if int(p.stem[1:]) > to:
+                (adir / "shots").mkdir(exist_ok=True)
+                p.replace(adir / "shots" / p.name)
+        if (self.dir / "godot.log").is_file():
+            (self.dir / "godot.log").replace(adir / "godot.log")
+        m["attempts"] = (m.get("attempts") or []) + [{"n": n, "from": m["frame"], "to": to, "inputs": len(dropped),
+                                                       "cheats": len(m.get("cheats") or []) - len(cheats)}]
+        m["cheats"] = cheats
+        prof = self.dir / "profile.json"
+        profile = json.loads(prof.read_text()) if prof.is_file() else None
+        # replay without captures: those frames' shots are already on disk
+        quiet = {**cfgmod.bridge_shots(self.config()), "every": 0, "on": []}
+        m["status"] = "running"
+        b = self._boot(godot, profile, quiet, first=False)
+        # an eval write at frame f ran after frame f, before the next one: replay it there
+        at = 0
+        for stop in sorted({c["f"] for c in cheats} | {to}):
+            if stop > at:
+                b.step(stop - at, [{"at": e["f"] - at, **{k: v for k, v in e.items() if k != "f"}}
+                                   for e in kept if at < e["f"] <= stop])
+                at = stop
+            for c in cheats:
+                if c["f"] == stop:
+                    b.request("eval", expr=c["eval"], write=True)
+        b.request("config", shots=cfgmod.bridge_shots(self.config()))
+        after = b.hashes()
+        diverged = next((f for f in range(to + 1) if f >= len(before) or f >= len(after) or before[f] != after[f]), None)
+        # what was held at `to`
+        down: dict[str, dict] = {}
+        for e in kept:
+            k = _hkey("action", e["action"]) if "action" in e else _hkey("key", e["key"]) if "key" in e \
+                else f"mouse:{e.get('button', 1)}"
+            if e["pressed"]:
+                down[k] = e
+            else:
+                down.pop(k, None)
+        m["held"] = [k for k in down if not k.startswith("mouse:")]
+        m["pending"] = [{"kind": "mouse", "what": [e["mouse"], e.get("button", 1)]} for k, e in down.items()
+                        if k.startswith("mouse:")]
+        if m.get("goal_met_at") is not None and m["goal_met_at"] > to:
+            m["goal_met_at"] = None
+        m["hints"] = {**(m.get("hints") or {}), "scene": None}
+        (self.dir / "last_look.json").unlink(missing_ok=True)
+        look = self.look_raw()
+        m["hints"]["scene"] = look.get("scene")
+        self.log("rewind", to=to, attempt=n, diverged_at=diverged)
+        self.save()
+        return {"look": look, "attempt": m["attempts"][-1], "diverged_at": diverged}
 
     def run(self, cmd: str, frames: int, inputs: list[dict], held: list[str], taps: list[dict],
             expr: str | None = None) -> dict:

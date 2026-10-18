@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..project import GhostlapError, Project, find_godot, find_project
 from . import config as cfgmod
+from . import verdict as verdictmod
 from .bridge_client import Bridge, BridgeError
 from .session import Session, load_goal, play_dir
 
@@ -280,7 +281,7 @@ def cmd_status(args, project: Project) -> int:
     if (s.dir / "events.jsonl").is_file():
         for ln in (s.dir / "events.jsonl").read_text().splitlines():
             e = json.loads(ln)
-            if e["kind"] in ("note", "goal_met", "incident", "crashed", "abandoned", "refused", "goal_error"):
+            if e["kind"] in ("note", "goal_met", "incident", "crashed", "abandoned", "refused", "goal_error", "rewind"):
                 notes.append(e)
             elif e["kind"] == "shot":
                 shots.add(e["path"])
@@ -293,7 +294,8 @@ def cmd_status(args, project: Project) -> int:
         if e["kind"] == "incident":
             lines.append("  " + incident_line(e))
             continue
-        txt = e.get("text") or e.get("why") or e.get("error") or (f"at f={e['at']}" if "at" in e else "")
+        txt = e.get("text") or e.get("why") or e.get("error") or (f"at f={e['at']}" if "at" in e else "") \
+            or (f"back to f={e['to']}, attempt {e['attempt']} set aside" if e["kind"] == "rewind" else "")
         lines.append(f"  f={e['f']} {e['kind']}: {txt}" + (f" (saw {e['saw']})" if e.get("saw") else ""))
     if m.get("verdict"):
         lines.append(f"verdict: {m['verdict']} — {m.get('why', '')}")
@@ -306,7 +308,21 @@ def cmd_end(args, project: Project) -> int:
     m = s.meta
     if m.get("verdict"):
         raise GhostlapError(f"session {s.id} already ended: {m['verdict']}")
-    if m["status"] == "running" and s.alive():
+    alive = m["status"] == "running" and s.alive()
+
+    def shoot():
+        sh = _bridge_call(s, lambda: s.bridge.shot(why="hint"))
+        s._sync_shot(sh)
+        return sh
+
+    try:
+        res = verdictmod.check(s, args.verdict, args.evidence, shoot if alive else None)
+    except verdictmod.Refused as e:
+        s.log("refused", cmd="end", verdict=args.verdict, why=str(e).splitlines()[0])
+        s.save()
+        raise
+    samples = None
+    if alive:
         b = s.bridge
         try:
             look = s.look_raw(views=["player"])
@@ -315,23 +331,49 @@ def cmd_end(args, project: Project) -> int:
                 for i, h in enumerate(hashes):
                     if i % 60 == 0 or i == len(hashes) - 1:
                         f.write(_j({"f": i, "hash": h}) + "\n")
+            samples = b.samples()
             m["final"] = {"f": look["f"], "hash": look["hash"], "player": look["views"].get("player")}
         except BridgeError:
             pass
         b.quit()
-    m.update({"verdict": args.verdict, "why": args.why, "evidence": args.evidence, "status": "ended"})
-    s.log("end", verdict=args.verdict, why=args.why)
+    verdictmod.write(s, res, args.why, samples)
+    m.update({"verdict": res["verdict"], "basis": res["basis"], "why": args.why, "evidence": args.evidence,
+              "status": "ended"})
+    s.log("end", verdict=res["verdict"], basis=res["basis"], why=args.why)
     s.save()
     pointer = play_dir(project) / "active"
     if pointer.is_file() and pointer.read_text().strip() == s.id:
         pointer.unlink()
-    lines = [f"session {s.id} ended: {args.verdict} — {args.why}",
+    basis = {"machine": "machine-checked", "visual": "visual evidence", "incident": "unconfirmed until the replay check",
+             "blocked": "not a game bug"}[res["basis"]]
+    lines = [f"session {s.id} ended: {res['verdict']} ({basis}) — {args.why}",
              *(["warning: incident shots were off (shots.on), so this fail has no pictures of its incidents"]
                if args.verdict == "fail" and "incident" not in cfgmod.value(s.config(), "shots.on") else []),
              f"goal met: {'yes, at f=' + str(m['goal_met_at']) if m.get('goal_met_at') is not None else 'no'}",
              f"frames {m['used']['frames']}, commands {m['used']['commands']}, shots {m['used']['shots']}, ~{m['used']['bytes'] // 4} tokens returned",
-             f"files: {s.dir}"]
+             f"report: {s.dir / 'report.md'} · evidence: {s.dir / 'evidence.json'}"]
     _emit(args, None, "\n".join(lines), m)
+    return 0
+
+
+def cmd_rewind(args, project: Project) -> int:
+    s = _session(args, project, "rewind")
+    godot = find_godot(args.godot)
+    if not godot:
+        raise GhostlapError("Godot not found — set GHOSTLAP_GODOT or pass --godot")
+    r = _bridge_call(s, lambda: s.rewind(godot, args.to))
+    a = r["attempt"]
+    lines = [f"rewound to f={args.to}: attempt {a['n']} (f={a['to'] + 1}..{a['from']}, {a['inputs']} inputs) moved to "
+             f"attempts/{a['n']}.jsonl; the input line now ends here"]
+    if r["diverged_at"] is not None:
+        lines.append(f"WARNING: the replay diverged at f={r['diverged_at']}: the game isn't deterministic from these inputs, "
+                     f"so this state isn't exactly the one you saw (and a test of this line won't replay)")
+    else:
+        lines.append("replay matched the first run frame for frame")
+    look = r["look"]
+    lines += [header(s, look)] + render_views(look["views"])
+    s.remember(look["views"])
+    _emit(args, s, "\n".join(lines), {"rewind": a, "diverged_at": r["diverged_at"], "look": look})
     return 0
 
 
@@ -537,6 +579,10 @@ def add_parser(sub, common) -> None:
     p.add_argument("--why", required=True)
     p.add_argument("--evidence", action="append", help="decisive frames or shots, e.g. f1260")
     p.set_defaults(play_fn=cmd_end)
+
+    p = ps.add_parser("rewind", parents=[common, sess], help="restart and replay the input line to a frame; later inputs become an attempt")
+    p.add_argument("--to", type=int, required=True, help="the frame to go back to")
+    p.set_defaults(play_fn=cmd_rewind)
 
     p = ps.add_parser("config", parents=[common, sess], help="show settings, or change them live: shots.rolling.every=300")
     p.add_argument("set", nargs="*", metavar="key=value")

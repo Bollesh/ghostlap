@@ -76,6 +76,7 @@ class Bridge extends Node:
 	var pending_id = null
 	var schedule := {}              # absolute frame -> [input dicts]
 	var hashes := PackedStringArray()   # state hash per frame (index = frame)
+	var samples: Array = []             # player {pos, vel, floor} per frame (index = frame), {} without one
 	var quitting := false
 	var observe: RefCounted
 	var headless := false
@@ -153,6 +154,7 @@ class Bridge extends Node:
 		else:
 			frame += 1
 		hashes.append(_hash())
+		samples.append(_sample())
 		var new_incs := _check_incidents()
 		var met_before := goal_met_at
 		_check_goal()
@@ -273,6 +275,8 @@ class Bridge extends Node:
 			"hashes":
 				var lo := int(a.get("from", 0))
 				_reply(peer, id, {"ok": true, "result": Array(hashes.slice(lo))})
+			"samples":
+				_reply(peer, id, {"ok": true, "result": samples.slice(int(a.get("from", 0)))})
 			"step":
 				var n := int(a.get("frames", 1))
 				if n < 1:
@@ -412,6 +416,19 @@ class Bridge extends Node:
 			"incidents": incidents.all.size() if incidents != null else 0,
 			"suppressed_errors": incidents.suppressed_errors if incidents != null else 0,
 		}
+
+	## The player at the end of this frame, for state.jsonl and the state at evidence frames.
+	func _sample() -> Dictionary:
+		var p: Node = observe.find_player()
+		if not (p is Node2D or p is Node3D):
+			return {}
+		var d := {"pos": observe._vec(p.global_position)}
+		if p is CharacterBody2D or p is CharacterBody3D:
+			d["vel"] = observe._vec(p.velocity)
+			d["floor"] = p.is_on_floor()
+		elif p is RigidBody2D or p is RigidBody3D:
+			d["vel"] = observe._vec(p.linear_velocity)
+		return d
 
 	## Shots captured and UI that appeared since the last response that carried them.
 	func _news() -> Dictionary:
