@@ -94,7 +94,9 @@ class Bridge extends Node:
 	var shots: RefCounted
 	var hud: CanvasLayer = null
 	var _down := {}                     # injected presses not released yet: "action:x"/"key:x" -> input
-	var _input_lost: Array = []         # re-pressed at the start of the running step (see _restore_held)
+	var _input_lost: Array = []         # holds a focus change released, pressed again (see _restore_held)
+	var _focus_changed := -1            # a window/app focus notification arrived: 1 while frozen, 0 mid-run
+	var _frozen := false
 	var _progress_ms := 0
 
 	func _init(t: SceneTree, a: Dictionary) -> void:
@@ -206,10 +208,15 @@ class Bridge extends Node:
 				_reply(pending_peer, pending_id, {"ok": true, "result": res})
 				pending_peer = null
 				pending_id = null
-			var held := _held_now()
+			_frozen = true
 			_serve_until_step()
-			_restore_held(held, frame + 1)
+			_frozen = false
 		if not quitting:
+			if _focus_changed >= 0:
+				# frozen: released and pressed again before frame+1, so the game never saw it. Mid-run:
+				# Godot handled the focus event before this frame's physics, so this frame ran without it
+				_restore_held(_down.keys(), frame + 1, frame + 1 if _focus_changed == 1 else frame)
+				_focus_changed = -1
 			_apply_inputs(frame + 1)
 
 	# ------------------------------------------------------------ socket
@@ -367,15 +374,19 @@ class Bridge extends Node:
 			schedule[f].append(inp)
 		return ""
 
-	## Injected holds that are down as the game freezes.
-	func _held_now() -> Array:
-		return _down.keys().filter(func(k): return _is_down(_down[k]))
+	## A window that gets or loses focus makes Godot release every pressed input (X11 does it on
+	## focus changes), behind the game's back: while frozen, or mid-step (a replay runs the whole
+	## line as one step). After a focus notification, press lost holds again for frame f and report
+	## them with the frame the release took effect: the CLI records that release and the press, so
+	## the line replays what the game saw. Only after a focus change: a game that releases an action
+	## itself (Input.action_release) keeps it released, as it would for a player.
+	func _notification(what: int) -> void:
+		if what in [NOTIFICATION_WM_WINDOW_FOCUS_IN, NOTIFICATION_WM_WINDOW_FOCUS_OUT,
+				NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_FOCUS_OUT]:
+			# a mid-run one wins: the game already ran a frame without the hold
+			_focus_changed = (1 if _frozen else 0) if _focus_changed < 0 else mini(_focus_changed, 1 if _frozen else 0)
 
-	## A window that gets or loses focus while frozen makes Godot release every pressed input
-	## (X11 does it on focus changes), behind the game's back. Press those holds again for the
-	## next frame and report them: the CLI records a release+press on that frame, which replays
-	## the same (just_pressed true, just_released false).
-	func _restore_held(held: Array, f: int) -> void:
+	func _restore_held(held: Array, f: int, released: int) -> void:
 		var releasing := {}
 		for inp in schedule.get(f, []):
 			if not bool(inp.get("pressed", true)):
@@ -383,7 +394,7 @@ class Bridge extends Node:
 		for k in held:
 			if _down.has(k) and not _is_down(_down[k]) and not releasing.has(k):
 				_inject(_down[k], true)
-				_input_lost.append({"f": f, "input": k})
+				_input_lost.append({"f": f, "released": released, "input": k})
 
 	static func _down_key(inp: Dictionary) -> String:
 		if inp.has("action"):
@@ -537,6 +548,9 @@ class Bridge extends Node:
 			return "expression calls a method that changes the game (%s); eval --write allows it" % _writes.search(src).get_string(2)
 		var e := Expression.new()
 		if e.parse(src, PackedStringArray(INPUT_NAMES)) != OK:
+			if "func(" in src.replace(" ", ""):
+				return ("parse: %s. An expression can't hold a lambda, loop or statement (Godot's Expression); "
+						+ "for a property of many nodes use pluck(nodes, 'prop')") % e.get_error_text()
 			return "parse: " + e.get_error_text()
 		return e
 
@@ -698,6 +712,11 @@ class ExprContext extends RefCounted:
 
 	func group(name: String) -> Array:
 		return tree.get_nodes_in_group(name)
+
+	## A property of each node (Expression has no lambdas for .map()):
+	## pluck(node('Coins').find_children('*', 'Area2D', true, false), 'global_position')
+	func pluck(nodes: Array, prop: String) -> Array:
+		return nodes.map(func(n): return n.get(prop) if n is Object else null)
 
 	## Distance between two nodes (or a node and the player) in player heights.
 	func dist_h(a, b = null) -> float:

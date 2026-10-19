@@ -25,7 +25,13 @@ def session(tmp_path):
     def _open(src: Path, scene: str = "res://main.tscn", views=None, display="headless", profile=None):
         proj = tmp_path / src.name
         if not proj.exists():
-            shutil.copytree(src, proj, ignore=shutil.ignore_patterns(".godot", "play"))
+            # never the source's .ghostlap/: it's local state (gitignored), absent on a fresh clone
+            shutil.copytree(src, proj, ignore=shutil.ignore_patterns(".godot", ".ghostlap"))
+            if profile is None and (src / ".gitignore").is_file() and ".ghostlap/" in (src / ".gitignore").read_text():
+                # an example: detect its profile as a user would
+                from ghostlap.cli import main
+                assert main(["scan", "--project", str(proj)]) == 0
+                assert main(["detect", "--project", str(proj), "--write-profile"]) == 0
         py = proj / ".ghostlap/profile.yaml"
         prof = profile if profile is not None else (yaml.safe_load(py.read_text()) if py.is_file() else {})
         bp = bridge_profile(Project(proj), prof)
@@ -171,3 +177,21 @@ def test_detect_picks_default_views(tmp_path, fixture, kind, views):
     from ghostlap.graph.store import Graph
 
     assert detect(Graph(Project(proj).graph_db), proj)["game_type"]["type"] == kind
+
+
+def test_the_map_marks_pickups_physics_cant_see(session):
+    """A coin Area2D on collision layer 0 is invisible to point queries; the map marks it by node.
+    One that stopped monitoring (collected, still animating) isn't a pickup any more."""
+    b = session(Path(__file__).resolve().parent / "fixtures" / "incidents", "res://coins.tscn", profile={})
+    m = b.look(views=["map"])["views"]["map"]
+    prow = next(r for r in m["rows"] if "P" in r)
+    assert prow.count("o") == 1 and prow.index("o") > prow.index("P"), m
+
+
+def test_near_gives_the_top_edge_of_slopes(session):
+    """The map can't draw a slope: near lists a sloped solid's top edge, left to right."""
+    b = session(Path(__file__).resolve().parent / "fixtures" / "incidents", "res://slopes.tscn", profile={})
+    near = {e["name"]: e for e in b.look(views=["near"], radius=20)["views"]["near"]}
+    assert near["Ramp"]["surface"] == [[-100, 280], [100, 200]], near["Ramp"]
+    tilted = near["Tilted"]["surface"]
+    assert len(tilted) == 2 and tilted[0][0] < tilted[1][0] and tilted[0][1] < tilted[1][1], tilted   # slopes down to the right

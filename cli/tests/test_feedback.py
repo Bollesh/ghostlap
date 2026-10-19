@@ -8,6 +8,9 @@ def test_interpret_common_complaints():
     assert ("impact.feedback", "low") in interpret("hitting the spikes looks very wonky, the hits don't register")
     assert interpret("the camera lags behind") == [("camera.follow_lag", "high")]
     assert interpret("I like it") == []
+    mixed = interpret("falls too slowly, but the jump rises too fast")
+    assert ("jump.fall_time", "high") in mixed and ("jump.time_to_apex", "low") in mixed
+    assert ("jump.fall_time", "low") not in mixed and ("jump.fall_rise_ratio", "high") not in mixed
 
 
 def test_tighten_moves_range_past_the_value():

@@ -194,3 +194,26 @@ def test_a_re_pressed_hold_is_one_hold_in_the_repro():
             {"f": 50, "action": "move_right", "pressed": False}, {"f": 50, "action": "move_right", "pressed": True},
             {"f": 120, "action": "move_right", "pressed": False}]
     assert repro_steps(line, 60) == ["hold move_right 0.02–2.00 s"]
+
+
+def test_the_hud_reads_inputs_in_frame_order(tmp_path):
+    from types import SimpleNamespace
+
+    from ghostlap.play.verdict import hud
+    # one command's taps, written in flag order: --press jump@20:2 --press dash@3
+    rows = [{"f": 20, "action": "jump", "pressed": True}, {"f": 22, "action": "jump", "pressed": False},
+            {"f": 3, "action": "dash", "pressed": True}, {"f": 4, "action": "dash", "pressed": False}]
+    (tmp_path / "inputs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    s = SimpleNamespace(dir=tmp_path, meta={"scene": "res://x.tscn", "fps": 60})
+    data, _ = hud(s, {"verdict": "blocked", "basis": "blocked", "final_frame": 30, "items": []}, "why")
+    assert [e["f"] for e in data["inputs"]] == [3, 4, 20, 22]
+
+
+@pytest_godot
+def test_end_video_without_ffmpeg_is_refused_before_the_verdict(proj, gl, tmp_path):
+    gl("start", "--scene", "res://clean.tscn", "--headless")
+    env = {**os.environ, "GHOSTLAP_GODOT": find_godot(), "PATH": str(tmp_path)}   # no ffmpeg on PATH
+    r = subprocess.run([sys.executable, "-m", "ghostlap", "play", "end", "--verdict", "blocked", "--why", "x", "--video"],
+                       cwd=proj, capture_output=True, text=True, timeout=180, env=env)
+    assert r.returncode != 0 and "needs ffmpeg" in r.stderr
+    assert "verdict" not in json.loads((_session(proj) / "session.json").read_text())

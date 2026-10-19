@@ -106,6 +106,17 @@ def build_player_info(g: Graph, node: dict) -> PlayerInfo:
                 if c not in agg["calls"]:
                     agg["calls"].append(c)
             agg["uses"].extend(e["props"].get("uses", []))
+    # a prefix read (`"jump" + action_suffix`) that isn't an action itself stands for jump_p1, jump_p2, ...
+    defined = {a["name"] for a in g.nodes("InputAction") if a.get("file")}
+    for a in [a for a in info.reads if defined and a not in defined]:
+        full = sorted(x for x in defined if x.startswith(a))
+        if full:
+            agg = info.reads.pop(a)
+            for x in full:
+                info.reads.setdefault(x, agg)
+                if a in info.own_reads:
+                    info.own_reads.add(x)
+            info.own_reads.discard(a)
     return info
 
 

@@ -304,9 +304,55 @@ func view_near(radius_h: float) -> Array:
 		var ext = _extent(n)
 		if ext != null and (ext.x / h > 1.5 or ext.y / h > 1.5):
 			e["size_h"] = _vec(ext / h, 1)
+		if dims == "2d" and e["kind"] in ["solid", "oneway"]:
+			var top := _surface_2d(n)
+			if not top.is_empty():
+				e["surface"] = top
 		found.append([rel.length(), e])
 	found.sort_custom(func(a, b): return a[0] < b[0])
 	return found.slice(0, MAX_NEAR).map(func(x): return x[1])
+
+
+## The top edge of a sloped solid as world points, left to right: a CollisionPolygon2D, or a
+## rotated rectangle. The map's cells can't show a slope; these points are where the player can
+## stand. [] for level, axis-aligned shapes (the map and size_h already describe those).
+func _surface_2d(n: Node) -> Array:
+	var pts := PackedVector2Array()
+	for c in n.get_children():
+		if c is CollisionPolygon2D and c.polygon.size() >= 3:
+			pts = c.global_transform * c.polygon
+		elif c is CollisionShape2D and c.shape is RectangleShape2D and absf(wrapf(c.global_rotation, -PI / 4, PI / 4)) > 0.01:
+			var hs: Vector2 = c.shape.size / 2.0
+			pts = c.global_transform * PackedVector2Array([-hs, Vector2(hs.x, -hs.y), hs, Vector2(-hs.x, hs.y)])
+		if not pts.is_empty():
+			break
+	if pts.is_empty():
+		return []
+	var lo := 0
+	var hi := 0
+	for i in pts.size():
+		if pts[i].x < pts[lo].x:
+			lo = i
+		if pts[i].x > pts[hi].x:
+			hi = i
+	# the outline from leftmost to rightmost runs both ways round; the top is the higher chain
+	var chains := [[], []]
+	for dir in [0, 1]:
+		var i := lo
+		while true:
+			chains[dir].append(pts[i])
+			if i == hi:
+				break
+			i = (i + (1 if dir == 0 else pts.size() - 1)) % pts.size()
+	var mean := func(ch: Array) -> float:
+		return ch.reduce(func(acc, q): return acc + q.y, 0.0) / ch.size()
+	var top: Array = chains[0] if mean.call(chains[0]) <= mean.call(chains[1]) else chains[1]
+	# the ends of that chain can be a shape's short sides (steeper than 45°, rising inwards): not standable
+	while top.size() > 2 and top[1].y < top[0].y and absf(top[1].x - top[0].x) < absf(top[1].y - top[0].y):
+		top.pop_front()
+	while top.size() > 2 and top[-2].y < top[-1].y and absf(top[-1].x - top[-2].x) < absf(top[-1].y - top[-2].y):
+		top.pop_back()
+	return top.slice(0, 12).map(func(q): return [roundi(q.x), roundi(q.y)])
 
 
 ## World rect of a 2D collision object's shapes (null if none): used for nearest point / extent.
@@ -370,20 +416,23 @@ func view_map(opts: Dictionary):
 	q.exclude = ex
 	var pp: Vector2 = player_centre()
 	var origin := (pp - (Vector2(w / 2, hgt / 2) + Vector2(0.5, 0.5)) * cell).round()
+	var pcell := Vector2i(w / 2, hgt / 2)
+	var kinds := []
+	for y in hgt:
+		var row := []
+		for x in w:
+			row.append(_sample_cell(space, q, origin + Vector2(x, y) * cell, cell))
+		kinds.append(row)
+	_mark_objects(kinds, origin, cell)
+	kinds[pcell.y][pcell.x] = "player"
 	var rows := PackedStringArray()
 	var used := {}
-	var pcell := Vector2i(w / 2, hgt / 2)
-	for y in hgt:
-		var row := ""
-		for x in w:
-			var kind := "empty"
-			if Vector2i(x, y) == pcell:
-				kind = "player"
-			else:
-				kind = _sample_cell(space, q, origin + Vector2(x, y) * cell, cell)
-			row += SYMBOL[kind]
+	for row in kinds:
+		var s := ""
+		for kind in row:
+			s += SYMBOL[kind]
 			used[kind] = true
-		rows.append(row)
+		rows.append(s)
 	var legend := {}
 	for k in used:
 		if k != "empty":
@@ -392,6 +441,24 @@ func view_map(opts: Dictionary):
 
 
 const _RANK := {"empty": 0, "solid": 1, "oneway": 2, "unknown": 3, "pickup": 4, "goal": 5, "enemy": 6, "hazard": 7}
+
+## Pickups, goals, enemies and hazards by node, not by physics: a point query only hits a collider
+## whose collision_layer it masks, and a pickup Area2D often has layer 0 (it only detects the
+## player). An area that stopped monitoring (a collected coin still animating) can't be picked up.
+func _mark_objects(kinds: Array, origin: Vector2, cell: Vector2) -> void:
+	for n in tree.current_scene.find_children("*", "CollisionObject2D", true, false):
+		if n == player or player.is_ancestor_of(n) or n is TileMapLayer:
+			continue
+		if n is Area2D and not n.monitoring:
+			continue
+		var k := classify(n)
+		if not k in ["pickup", "goal", "enemy", "hazard"]:
+			continue
+		var r = _rect_2d(n)
+		var at: Vector2 = r.get_center() if r != null else n.global_position
+		var c := Vector2i(((at - origin) / cell).floor())
+		if c.y >= 0 and c.y < kinds.size() and c.x >= 0 and c.x < kinds[c.y].size() and _RANK[k] > _RANK[kinds[c.y][c.x]]:
+			kinds[c.y][c.x] = k
 
 func _sample_cell(space: PhysicsDirectSpaceState2D, q: PhysicsPointQueryParameters2D, top_left: Vector2, cell: Vector2) -> String:
 	var best := "empty"

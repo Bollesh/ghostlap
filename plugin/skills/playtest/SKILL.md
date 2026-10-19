@@ -55,7 +55,9 @@ budget: {frames: 36000, commands: 120, shots: 15}
 - **No clean expression?** Leave `success` out. A pass then needs a cited screenshot (step 5).
 - **Expressions:**
   - Inputs: `player`, `scene`, `incident`, `tree`.
-  - Helpers: `node('Path')` (from the current scene), `group('name')`, `dist_h(a, b)` (in player heights).
+  - Helpers: `node('Path')` (from the current scene), `group('name')`, `dist_h(a, b)` (in player heights),
+    `pluck(nodes, 'prop')` (a property of each node).
+  - One Godot expression: no lambdas, loops or statements. `find_children(...).map(func…)` fails; use `pluck`.
   - A bare name reads a member of the current scene.
   - Use `.get('prop')` when a property name is also a built-in function, like `log` or `min`.
 - `fail_if: [incident.stuck]` makes a signal count as a failure, when the goal is about it.
@@ -108,8 +110,9 @@ ghostlap play look
   phase is a function of the frame number.
 - **Check progress with `eval`** on the game's own counters, like a coin count or a door flag.
   An object being listed in `near` doesn't mean it hasn't been collected yet.
-- **`WARNING: Godot released …`** means a window focus change dropped a hold while the game was
-  frozen. The bridge pressed it again and recorded it, so carry on. Without render-dependent
+- **`WARNING: Godot released …`** means a window focus change dropped a hold (it happens when
+  "offscreen" is a desktop window because xvfb isn't installed; `start` says so). The bridge
+  pressed it again on the next frame and recorded it, so carry on. Without render-dependent
   logic, `--headless` avoids it.
 - **After 3 failed approaches to the same obstacle,** take a different route, or end `blocked`.
 - **If your context gets long or compacts,** `ghostlap play status` restores the goal, the budget, your notes and where you are.

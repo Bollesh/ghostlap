@@ -77,6 +77,9 @@ class Bridge:
         cmd.append(godot)
         if display == "headless":
             cmd.append("--headless")
+        else:
+            # --fixed-fps sets game time; vsync only makes a covered window (no xvfb) wait on the compositor, ~1 fps
+            cmd.append("--disable-vsync")
         cmd += ["--path", str(Path(project_dir).resolve()), "--fixed-fps", str(physics_tps),
                 "--script", str(addon_dir() / "play" / "bridge.gd"), *(extra_args or []), "--",
                 f"--session={session_dir}", f"--scene={scene}", f"--seed={seed}"]

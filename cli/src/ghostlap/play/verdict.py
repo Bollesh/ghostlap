@@ -174,7 +174,8 @@ def hud(s: Session, res: dict, why: str) -> tuple[dict, list[int]]:
     incs = [{"f": e["f"], "type": e["type"], "why": e.get("why", "")} for e in final if e["kind"] == "incident"]
     data = {"goal": goal.get("goal") or m["scene"], "describe": goal.get("describe", ""), "verdict": res["verdict"],
             "basis": res["basis"], "why": why, "tps": fps(m), "final": res["final_frame"],
-            "inputs": read_jsonl(s.dir / "inputs.jsonl"), "notes": notes, "incidents": incs,
+            # by frame: a command writes its taps in flag order; the HUD reads them in sequence
+            "inputs": sorted(read_jsonl(s.dir / "inputs.jsonl"), key=lambda e: e["f"]), "notes": notes, "incidents": incs,
             "goal_met_at": m.get("goal_met_at")}
     moments = [n["f"] for n in notes] + [i["f"] for i in incs] + [it["f"] for it in res["items"]]
     if m.get("goal_met_at") is not None:

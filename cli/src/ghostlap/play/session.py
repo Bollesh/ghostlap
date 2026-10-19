@@ -576,12 +576,13 @@ class Session:
                 raise GhostlapError(f"during {cmd} from frame {start}: " + self.mark_dead(str(e))) from e
             raise
         ran = res["f"] - start
-        # holds Godot released while the game was frozen (a window focus change), pressed again by
-        # the bridge on the first frame: a release+press there replays the same
+        # holds a window focus change released, pressed again by the bridge on frame f: recorded as
+        # the release on the frame it took effect (f itself when frozen, f-1 mid-run) and the press
         lost = []
         for x in res.get("input_lost") or []:
             kind, name = x["input"].split(":", 1)
-            lost += [{"at": x["f"] - start, kind: name, "pressed": False}, {"at": x["f"] - start, kind: name, "pressed": True}]
+            lost += [{"at": x.get("released", x["f"]) - start, kind: name, "pressed": False},
+                     {"at": x["f"] - start, kind: name, "pressed": True}]
             self.log("input_lost", input=x["input"], at=x["f"])
         self._record(start, lost + inputs, ran)
         self.meta["held"] = held

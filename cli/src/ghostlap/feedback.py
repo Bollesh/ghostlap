@@ -55,10 +55,11 @@ PHRASES: list[tuple[str, list[tuple[str, str]]]] = [
 
 
 def interpret(text: str) -> list[tuple[str, str]]:
-    t = text.lower()
     out: list[tuple[str, str]] = []
+    # one clause at a time: `.*` in a pattern must not join "falls too slowly" with "rises too fast"
+    clauses = re.split(r"[,.;!?]|\bbut\b|\band\b", text.lower())
     for pat, pairs in PHRASES:
-        if re.search(pat, t):
+        if any(re.search(pat, c) for c in clauses):
             for p in pairs:
                 if p not in out:
                     out.append(p)

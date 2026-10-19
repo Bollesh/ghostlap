@@ -197,3 +197,11 @@ def test_eval_refuses_rng_and_input_calls(game):
     for expr in ("randf()", "Input.action_press('jump')", "node('Goal').emit_signal('body_entered', player)"):
         assert "changes the game" in game("play", "eval", expr, ok=False).stderr, expr
     assert game("play", "eval", "player.is_on_floor()").stdout.strip() in ("true", "false")
+
+
+def test_eval_pluck_and_the_lambda_hint(game):
+    game("play", "start", "--scene", "res://level_long.tscn", "--headless")
+    names = json.loads(game("play", "eval", "[player.name, scene.name]").stdout)
+    assert json.loads(game("play", "eval", "pluck([player, scene], 'name')").stdout) == names
+    err = game("play", "eval", "[1, 2].map(func(x): return x * 2)", ok=False).stderr
+    assert "can't hold a lambda" in err and "pluck(" in err

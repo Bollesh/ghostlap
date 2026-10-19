@@ -16,8 +16,9 @@ Claude can now:
 - rewind and try again;
 - end with a verdict that `play end` checks, confirms by replay, and turns into a report and a video.
 
-Status on 2026-10-18: all 130 tests pass on Godot 4.7.2, and the 87 play, bridge and view tests on 4.3.
-Items 1.1–1.6 are committed on `phase-1`; 1.7 and 1.8 aren't committed yet.
+Status on 2026-10-19: items 1.1–1.8 are committed on `phase-1`. The fixes from the reviews and the
+second real-game test (below) aren't committed yet; with them, the full suite passes on Godot 4.7.2
+and 4.3.
 
 ## What exists now
 
@@ -319,10 +320,56 @@ Rewinding past the lost hold reported `diverged at f=1359`, honestly. The line a
 | `OS.crash()` / a fatal signal prints the message first, then a long C++ backtrace | 1.4 | Crash evidence is a filtered log summary |
 | A rendered window that is hidden or on a locked screen advances very slowly | 1.4 | Hang detection requires a busy CPU in rendered modes |
 | PyYAML (YAML 1.1) reads a bare `on:` key as `true` | 1.5 | The goal loader maps `true` back to `shots.on` |
-| A window that gains or loses focus makes Godot release every pressed input, even with `WINDOW_FLAG_NO_FOCUS` set after start (the window still got focus) | 1.8 | The bridge presses lost holds again after a freeze and records it (above) |
+| A window that gains or loses focus makes Godot release every pressed input, even with `WINDOW_FLAG_NO_FOCUS` set after start (the window still got focus). It happens mid-run as well as while frozen | 1.8, 2026-10-19 | After a focus notification the bridge presses lost holds again and records the release and press (row 11 below) |
+| With vsync on, a covered window waits for the compositor on every frame: about 1 frame/s | 2026-10-19 | Rendered launches pass `--disable-vsync` (row 5 below) |
 | `--fixed-fps` must equal the project's physics tick rate for one frame to be one tick | 1.8 | Sessions read `physics_ticks_per_second` |
 | `Input.release_pressed_events()` isn't exposed to scripts | 1.8 | Tests simulate a focus release with `Input.action_release()` |
 | Movie Maker doesn't write the frame the bridge is blocked in when it quits | 1.7 | The video pauses the game tree and runs on 2 s, so the final frame is rendered |
+
+## Reviews and the second real-game test (2026-10-19)
+
+After 1.8 was committed:
+- **Code review:** every commit on `main` and on `phase-1` was reviewed.
+- **CI:** the failure on `main` was investigated.
+- **Second real-game test:** Claude played Godot's official 2D platformer demo again, this time on a
+  machine without xvfb, and collected all 21 coins. The pass was machine-checked, the replay was
+  exact, and it took 85 of 150 commands.
+
+### Fixed
+
+| # | Issue | Found by | Fix |
+|---|---|---|---|
+| 1 | CI failed on `main`: `test_observe` read the examples' `.ghostlap/profile.yaml`, which is gitignored, so a fresh clone has none | CI | The test copies an example without `.ghostlap/`, then runs `scan` and `detect` on the copy, as a user would |
+| 2 | `feel feedback` read "falls too slowly, but the jump rises too fast" as both "falls too fast" and "falls too slowly", and wrote both into `profile.yaml`: its patterns' `.*` reached across the whole sentence | review | Each clause is matched on its own (split on `, . ; ! ?`, "but" and "and"). Still by design: "falls too slowly" also means "rises too slowly" (`time_to_apex`), so that sentence still pushes `time_to_apex` both ways |
+| 3 | Video key chips at the wrong time: a command writes its taps in flag order, not frame order (`--press jump@20:2 --press dash@3`), and the HUD reads the line in sequence, so `dash` showed at f=22 instead of 3 | review | `verdict.hud` sorts the inputs by frame (a stable sort keeps same-frame order) |
+| 4 | `end --video` without ffmpeg saved the verdict, then failed: the verdict, replay result and report path were never printed, and `end` again said "already ended" | review | `end` checks for ffmpeg before it saves anything |
+| 5 | Rendered sessions crawled (2–70 s for 120 frames, against 0.1 s) whenever their window was covered: without xvfb, "offscreen" is a desktop window, and with vsync each frame waits for the compositor. It made the full test suite take 18 minutes and fail 2 timeouts | flaky test | Every rendered launch passes `--disable-vsync` (`--fixed-fps` already sets game time). Same for `feel clip`. The full suite went back to about 6 minutes |
+| 6 | `detect` missed actions named at runtime: the demo reads `"jump" + action_suffix` (the split-screen pattern), so detect said the player never reads jump, and the platformer score fell to 0.67 | real game | The parser takes the literal prefix of a `"…" + x` argument. A prefix that isn't an action itself stands for the actions that start with it (`jump` → `jump_p1`, `jump_p2`). The demo now scores 1.00 |
+| 7 | The `map` view never showed coins: it samples cells with physics point queries, which only hit colliders on a layer the query masks, and pickup areas are often on layer 0 (they only detect the player). `near` listed them, because it walks nodes | real game | After sampling, the map marks each pickup, goal, enemy and hazard node's cell, keeping the rank order. An area that stopped monitoring (a collected coin still animating) isn't marked |
+| 8 | Slopes can't be drawn in the map: the demo's route ran up a 20° ramp (a rotated `CollisionPolygon2D`), and planning it took a screenshot plus reading the polygon from the scene file | real game | `near` entries for solids that are polygons or rotated rectangles carry `surface`: the top edge as world points, left to right, with steep end sides trimmed. For the demo's ramp: `(448,74) (531,80) (707,140)` |
+| 9 | `eval` has no lambdas (`.map(func…)`): Godot's `Expression` can't parse them, and three tries cost three commands | real game | A parse error on `func(` says so and points to the new `pluck(nodes, 'prop')` helper, which returns a property of each node. The skill documents both. Works on 4.3 and 4.7 |
+| 10 | The video GIF came out at 8.2 MB, over the 8 MB cap: none of the three size steps was small enough, and it kept the last one silently | real game | A fourth step (10 fps, half width, 48 colours). If even that's too big, the output says to share the MP4. The demo's GIF is now 4.5 MB |
+| 11 | A video rendered in a window showed the run going wrong: the player ended on the ground with coins left, at "PASS". The replay check had been exact; a window replay diverged at different frames on different runs, while headless matched | real game | Window focus changes release every pressed input, and the bridge only re-pressed holds at freeze points, but a replay runs the whole line as one step. The bridge now re-presses after any focus notification (`NOTIFICATION_WM_WINDOW_FOCUS_*`, `NOTIFICATION_APPLICATION_FOCUS_*`), frozen or mid-run. It reports the frame the release took effect (the frame itself when frozen, the frame before mid-run, since Godot handles window events before physics), and the CLI records that release and the press, so the line replays exactly what the game saw. A game's own `Input.action_release` isn't undone. A replay that hits a focus change says so next to its result |
+| 12 | Without xvfb, "offscreen" silently became a desktop window, which hid both the vsync slowdown and the focus problem | real game | `play start` says so in its first lines and suggests installing xvfb |
+
+### Found in review, not fixed yet
+
+- **Rewind isn't atomic** (`session.rewind`): it trims `inputs.jsonl` and moves shots before Godot
+  is relaunched, and saves `session.json` only at the end. If the relaunch or the replay fails,
+  the files disagree. Every later rewind then fails with `FileExistsError`, because the attempt
+  number wasn't saved.
+- **`feel apply --only` then `--force`:** a partial apply marks the whole proposal applied, and
+  the `--force` needed for the rest also skips the "changed since the proposal" check, so a value
+  the user edited by hand is overwritten silently.
+- **Apply can edit a local variable:** the pattern that finds `var speed = …` also matches
+  indented variables inside functions. With a non-literal member and a same-named local, apply
+  edits the local and reports success.
+- **Lean:**
+  - the "matches the session" hash comparison is pasted twice in `replay.py`;
+  - `Refused.hint` is never read;
+  - `read_jsonl` is defined twice;
+  - two identical branches in the bridge's `_hash`.
+- **Not explained:** `main`'s 4.3-only CI failure on 0f44989 (the logs need auth).
 
 ## Code review fixes (before committing 1.3)
 
@@ -345,11 +392,11 @@ Rewinding past the lost hold reported `diverged at f=1359`, honestly. The line a
 | File | Covers |
 |---|---|
 | `test_bridge.py` (11) | Frozen clock, input timing in every callback, hitstop/pause/reload, determinism on all examples, refused requests |
-| `test_observe.py` (10) | Every view on fixtures (tile platformer, Sokoban, card battle), screenshot, window == headless, detect's default views |
-| `test_play_cli.py` (6) | The long level from the shell + replay, holds and taps, write guard, budgets, reload, bad goal, RNG calls |
+| `test_observe.py` (12) | Every view on fixtures (tile platformer, Sokoban, card battle), screenshot, window == headless, detect's default views |
+| `test_play_cli.py` (7) | The long level from the shell + replay, holds and taps, write guard, budgets, reload, bad goal, RNG calls, `pluck` and the lambda hint |
 | `test_incidents.py` (18) | Each planted incident fires (error, crash, hang, out of bounds, player lost, stuck, 3 deaths), an incident ends `until`, a clean run fires none; warnings, no-player games, load errors, error floods and repeated deaths |
-| `test_verdict.py` (9) | Pass refused off the final line and accepted on it, rewind replays inputs and eval writes to the same hash, fail needs a bug incident on the final line, signals vs `fail_if`, visual pass and `pre_verdict`, headless pass without `success`, repro phrases, `split_line` |
-| `test_replay.py` (14) | Exact replay of a pass and of `play replay`, divergence located (`chaos.tscn`), fails confirmed (error, crash), confirmation rules, highlight windows, the video (HUD data, the 2 s hold, frame count), every example replays exactly, re-pressed holds, the project tick rate |
+| `test_verdict.py` (11) | Pass refused off the final line and accepted on it, rewind replays inputs and eval writes to the same hash, fail needs a bug incident on the final line, signals vs `fail_if`, visual pass and `pre_verdict`, headless pass without `success`, repro phrases, `split_line` |
+| `test_replay.py` (16) | Exact replay of a pass and of `play replay`, divergence located (`chaos.tscn`), fails confirmed (error, crash), confirmation rules, highlight windows, the video (HUD data, the 2 s hold, frame count), every example replays exactly, holds re-pressed after a focus change (frozen and mid-step), a game's own release left alone, the project tick rate |
 | `test_preflight.py` (2) | Code findings (comments, seeded generators and `addons/` skipped), load and determinism checks, the cache and its invalidation, `start`'s preflight line |
 | `test_shots.py` (17) | Each capture trigger and hint on its fixture, none on a flat run, toast/flash ignored, ui settle and flush, rolling rotation with a live change and a pinned shot, settings layers and errors, headless, the real hook command |
 
@@ -361,7 +408,6 @@ Rewinding past the lost hold reported `diverged at f=1359`, honestly. The line a
   - `sweep`;
   - `goals suggest`;
   - `play issue`.
-- **Lost holds mid-run:** a focus change while frames run (not while frozen) still releases holds unnoticed. The bridge only checks after a freeze, because a game may release an action itself. The replay check would show a divergence. Headless avoids it, or xvfb (`--offscreen`) when installed.
 - **The Read hook only runs where the plugin is installed:** the playthrough read 2 screenshots, but `status` says "0 read" because the hook wasn't active in this shell.
 - **Inputs not built yet:** `--axis`, `--aim`, `--look`.
 - **Expression helpers not built yet:** `watch` and `visible_text` (2.5). So a `fail` can't yet rest on a watch-backed contradiction.
@@ -373,7 +419,6 @@ Rewinding past the lost hold reported `diverged at f=1359`, honestly. The line a
 - **Open follow-ups:**
   - Port the v1 feel runner (`probe/runner.gd`) to `parse_input_event` (finding 2 above).
   - CI only runs on `main` and PRs, so `phase-1` pushes aren't tested. The last `main` run failed on the 4.3 jobs for an unknown reason (the logs need auth).
-  - `test_clip_renders_now_vs_proposal` (feel) takes about 10 minutes locally when its window is hidden. It renders a real window, unlike the play tests.
 - **`trapped` and `softlock`** incidents are phase 2 (2.6); the `perf` signal isn't built.
 - **The Stop hook** (end or explain an open session) is listed with the hooks in design §5; it isn't built.
 - **The playthrough session** in the README ran before the tick-rate fix, at 60 frames/s on a 120-tick game (two ticks per frame). Its numbers are frames at 60/s.

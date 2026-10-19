@@ -36,6 +36,7 @@ MATCH_FRAMES = 2       # a replayed incident within this many frames is the same
 HIGHLIGHT_S = 3.0      # seconds kept around each moment in a highlight video
 LONG_S = 30.0          # sessions longer than this get a highlight video unless --full
 HOLD_S = 2.0           # the final frame (with the verdict) is held this long
+GIF_MAX = 8_000_000    # bytes: GitHub READMEs and chat uploads; the GIF steps down until it fits
 QUIET = {"every": 0, "keep": 5, "on": [], "width": 960}
 
 
@@ -48,8 +49,10 @@ def read_jsonl(path: Path) -> list[dict]:
 def drive(b: Bridge, inputs: list[dict], cheats: list[dict], to: int, pace_tps: int | None = None) -> dict | None:
     """Step `b` from frame 0 to `to` with the line's inputs; an eval write at frame f runs after
     frame f, as it did in the session. pace_tps: step in small chunks at real time (for watching).
-    Returns the last step's result."""
+    Returns the last step's result, with `input_lost` from every step (holds the window's focus
+    changes released and the bridge pressed again)."""
     res = None
+    lost: list[dict] = []
     at = 0
     chunk = max(1, pace_tps // 10) if pace_tps else None
     t0 = time.monotonic()
@@ -58,6 +61,7 @@ def drive(b: Bridge, inputs: list[dict], cheats: list[dict], to: int, pace_tps: 
             end = min(stop, at + chunk) if chunk else stop
             res = b.step(end - at, [{"at": e["f"] - at, **{k: v for k, v in e.items() if k != "f"}}
                                     for e in inputs if at < e["f"] <= end])
+            lost += res.get("input_lost") or []
             at = end
             if pace_tps:
                 lag = t0 + at / pace_tps - time.monotonic()
@@ -66,6 +70,8 @@ def drive(b: Bridge, inputs: list[dict], cheats: list[dict], to: int, pace_tps: 
         for c in cheats:
             if c["f"] == stop:
                 b.request("eval", expr=c["eval"], write=True)
+    if res is not None:
+        res["input_lost"] = lost
     return res
 
 
@@ -99,12 +105,13 @@ def _run(s, godot: str, run_dir: Path, display: str, pace: bool = False, hold: i
     m = s.meta
     inputs = read_jsonl(s.dir / "inputs.jsonl")
     b = launch(s, godot, run_dir, display, **kw)
-    out = {"hashes": [], "samples": [], "incidents": [], "crashed": None, "hung": None, "look": None}
+    out = {"hashes": [], "samples": [], "incidents": [], "crashed": None, "hung": None, "look": None, "input_lost": []}
     tps = fps(m)
     # a session that crashed or hung ends at its last known frame: run on a little to meet it again
     to = m["frame"] + (10 * tps if m.get("status") in ("crashed", "hung") else 0)
     try:
-        drive(b, inputs, m.get("cheats") or [], to, tps if pace else None)
+        res = drive(b, inputs, m.get("cheats") or [], to, tps if pace else None)
+        out["input_lost"] = (res or {}).get("input_lost") or []
     except BridgeHang as e:
         b.kill()
         out["hung"] = e.frame if e.frame is not None else -1
@@ -171,6 +178,8 @@ def check(s, godot: str, live_hashes: list[str] | None, live_samples: list[dict]
     end = s.meta["frame"]
     out = {"mode": "headless" if display == "headless" else "rendered", "frames": end,
            "seconds": round(time.monotonic() - t0, 1), "incidents": [_slim(i) for i in r["incidents"]]}
+    if r["input_lost"]:
+        out["input_lost"] = r["input_lost"]
     if r["crashed"] is not None:
         out["crashed_at"] = r["crashed"]
     if r["hung"] is not None:
@@ -216,7 +225,7 @@ def watch(s, godot: str, display: str = "window", fast: bool = False) -> dict:
     sampled = {h["f"]: h["hash"] for h in read_jsonl(s.dir / "hashes.jsonl")}
     bad = next((f for f, h in sorted(sampled.items()) if f >= len(r["hashes"]) or r["hashes"][f] != h), None)
     return {"frames": s.meta["frame"], "result": "exact" if live and bad is None else ("diverged" if live else "not compared"),
-            "diverged_by": bad, "crashed_at": r["crashed"], "hung_at": r["hung"]}
+            "diverged_by": bad, "crashed_at": r["crashed"], "hung_at": r["hung"], "input_lost": r["input_lost"]}
 
 
 # ------------------------------------------------------------------ video
@@ -272,13 +281,13 @@ def video(s, godot: str, hud: dict, moments: list[int], full: bool = False, widt
         raise GhostlapError(f"ffmpeg failed: {res.stderr[-1200:]}")
     out["mp4"] = str(mp4)
     gif = s.dir / "playtest.gif"
-    for rate, w, colors in ((20, width, 128), (15, int(width * 0.8), 96), (12, int(width * 0.6), 64)):
+    for rate, w, colors in ((20, width, 128), (15, int(width * 0.8), 96), (12, int(width * 0.6), 64), (10, int(width * 0.5), 48)):
         g = base.replace("fps=30", f"fps={rate}").replace(f"scale={width}:", f"scale={w}:")
         res = run(["-filter_complex", g + f",split[a][b];[a]palettegen=max_colors={colors}:stats_mode=diff[p];"
                    "[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle", "-loop", "0", str(gif)])
         if res.returncode != 0:
             raise GhostlapError(f"ffmpeg failed: {res.stderr[-1200:]}")
-        if gif.stat().st_size <= 8_000_000:
+        if gif.stat().st_size <= GIF_MAX:
             break
     out["gif"], out["gif_bytes"] = str(gif), gif.stat().st_size
     sheet = s.dir / "playtest-sheet.png"
@@ -294,5 +303,6 @@ def video(s, godot: str, hud: dict, moments: list[int], full: bool = False, widt
     out["matches_session"] = bool(live) and bad is None
     if bad is not None:
         out["diverged_by"] = bad
+    out["input_lost"] = r["input_lost"]
     avi.unlink(missing_ok=True)   # large; the MP4 is the keeper
     return out

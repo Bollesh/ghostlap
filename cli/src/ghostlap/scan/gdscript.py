@@ -62,6 +62,9 @@ def _string_args(args_node) -> list[str | None]:
     if args_node is None:
         return out
     for c in args_node.named_children:
+        # `"jump" + action_suffix` (splitscreen, per-player actions): the literal prefix names it
+        while c.type == "binary_operator" and c.named_children and _text(c).lstrip().startswith(('"', "&\"")):
+            c = c.named_children[0]
         out.append(_strip_str(_text(c)))
     return out
 

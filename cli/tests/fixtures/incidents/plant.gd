@@ -38,6 +38,12 @@ func _physics_process(_delta: float) -> void:
 			player.health = 0
 		"free":
 			player.queue_free()
+		"focus_out":
+			# what a window losing focus does, before the frame's physics (this node runs first)
+			for a in InputMap.get_actions():   # Input.release_pressed_events() isn't exposed
+				if Input.is_action_pressed(a):
+					Input.action_release(a)
+			get_tree().root.propagate_notification(NOTIFICATION_WM_WINDOW_FOCUS_OUT)
 		"show":
 			get_node(target).show()
 		"change":

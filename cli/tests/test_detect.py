@@ -37,3 +37,18 @@ def test_platformer_has_evidence(example):
     plat = next(g for g in det["genres"] if g["pack"] == "platformer")
     assert any("player.gd:" in m for m in plat["matched"]), plat["matched"]
     assert det["hazards"][0]["scene"] == "res://spikes.tscn"
+
+
+def test_actions_named_with_a_runtime_suffix(example):
+    """`"jump" + action_suffix` (splitscreen-style per-player actions) reads jump_p1."""
+    root = example("platformer_floaty")
+    gd = (root / "player.gd").read_text().replace('"jump")', '"jump" + action_suffix)')
+    (root / "player.gd").write_text(gd.replace("extends CharacterBody2D", 'extends CharacterBody2D\n\nvar action_suffix := "_p1"', 1))
+    pg = root / "project.godot"
+    pg.write_text(pg.read_text().replace("\njump={", "\njump_p1={"))
+    p = Project(root)
+    scan(p, text_only=True)
+    det = detect(Graph(p.graph_db), root)
+    assert det["roles"]["jump"] == "jump_p1"
+    plat = next(g for g in det["genres"] if g["pack"] == "platformer")
+    assert any("reads a jump input" in m for m in plat["matched"]), plat

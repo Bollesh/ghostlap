@@ -99,7 +99,8 @@ def render(project: Project, profile: dict, out_avi: Path, probes: list[str] | N
     (tmp / "plan.json").write_text(json.dumps(plan, indent=1))
     ensure_imported(godot_bin, project)
     out_avi.parent.mkdir(parents=True, exist_ok=True)
-    cmd = _display_prefix() + [godot_bin, "--path", str(project.root), "--write-movie", str(out_avi),
+    # --disable-vsync: a covered window would otherwise wait on the compositor for every frame (~1 fps)
+    cmd = _display_prefix() + [godot_bin, "--disable-vsync", "--path", str(project.root), "--write-movie", str(out_avi),
                                "--fixed-fps", str(plan["physics_fps"]), "--script", str(addon_dir() / "probe" / "runner.gd"),
                                "--", f"--plan={tmp / 'plan.json'}"]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

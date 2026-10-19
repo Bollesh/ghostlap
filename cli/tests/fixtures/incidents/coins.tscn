@@ -1,0 +1,43 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://player.gd" id="1_player"]
+
+[sub_resource type="RectangleShape2D" id="Rect_player"]
+size = Vector2(24, 40)
+
+[sub_resource type="RectangleShape2D" id="Rect_ground"]
+size = Vector2(2000, 40)
+
+[sub_resource type="CircleShape2D" id="Circle_coin"]
+radius = 10.0
+
+[node name="Coins" type="Node2D"]
+
+[node name="Ground" type="StaticBody2D" parent="."]
+position = Vector2(600, 300)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Ground"]
+shape = SubResource("Rect_ground")
+
+[node name="Player" type="CharacterBody2D" parent="." groups=["player"]]
+position = Vector2(0, 260)
+script = ExtResource("1_player")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Player"]
+shape = SubResource("Rect_player")
+
+[node name="Coin" type="Area2D" parent="."]
+position = Vector2(120, 260)
+collision_layer = 0
+monitorable = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Coin"]
+shape = SubResource("Circle_coin")
+
+[node name="CollectedCoin" type="Area2D" parent="."]
+position = Vector2(240, 260)
+collision_layer = 0
+monitoring = false
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="CollectedCoin"]
+shape = SubResource("Circle_coin")

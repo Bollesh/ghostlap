@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -117,6 +118,9 @@ def cmd_start(args, project: Project) -> int:
     if hint:
         look["shot_hint"] = hint
     lines = [f"session {s.id} started ({display}), frozen at frame 0"]
+    if display == "offscreen" and sys.platform.startswith("linux") and not shutil.which("xvfb-run"):
+        lines.append("note: no xvfb-run here, so offscreen is a desktop window: focus changes can release held inputs "
+                     "(the bridge presses them again). Install xvfb for a true offscreen run")
     if goal:
         lines.append(f"goal: {goal['goal']} — {goal.get('describe', '')}".rstrip(" —"))
         if goal.get("success"):
@@ -192,7 +196,7 @@ def _after_step(args, s: Session, res: dict, ran: int, extra: list[str]) -> None
     lost = res.get("input_lost") or []
     if lost:
         lines.append("WARNING: Godot released " + ", ".join(x["input"].split(":", 1)[1] for x in lost)
-                     + " while the game was frozen (its window gained or lost focus); the bridge pressed it again on f="
+                     + " (its window gained or lost focus); the bridge pressed it again on f="
                      + str(lost[0]["f"]) + ", recorded in the input line. Without render-dependent logic, --headless avoids this")
     lines += [f"UI f={u['f']}: {u['node']} appeared" + (f" ({u['text']})" if u.get("text") else " (no text)")
               for u in res.get("new_ui") or []]
@@ -328,6 +332,8 @@ def cmd_end(args, project: Project) -> int:
     m = s.meta
     if m.get("verdict"):
         raise GhostlapError(f"session {s.id} already ended: {m['verdict']}")
+    if args.video:
+        replaymod._need("ffmpeg")   # before the verdict is saved, so a missing tool doesn't hide it
     alive = m["status"] == "running" and s.alive()
 
     def shoot():
@@ -384,6 +390,14 @@ def cmd_end(args, project: Project) -> int:
     return 0
 
 
+def focus_note(lost: list[dict] | None) -> str:
+    """A replay window that gained or lost focus: Godot released the held inputs mid-run."""
+    if not lost:
+        return ""
+    return (f" · its window's focus changed at f={lost[0]['f']}: Godot released the held inputs and the bridge pressed "
+            "them again, which can change what follows (a run without a desktop window, under xvfb, avoids it)")
+
+
 def replay_line(rep: dict | None) -> str:
     if rep is None:
         return "replay check: not run"
@@ -391,7 +405,7 @@ def replay_line(rep: dict | None) -> str:
         return f"replay check: exact ({rep['frames']} frames, {rep['mode']}, {rep['seconds']} s) — every frame matches"
     if rep["result"] == "diverged":
         return f"replay check: diverged at f={rep['diverged_at']}: {rep['field']}" + (
-            f" · likely: {'; '.join(rep['likely_causes'])}" if rep.get("likely_causes") else "")
+            f" · likely: {'; '.join(rep['likely_causes'])}" if rep.get("likely_causes") else "") + focus_note(rep.get("input_lost"))
     return f"replay check: {rep['result']} ({rep.get('why', '')})"
 
 
@@ -414,12 +428,14 @@ def video_lines(s: Session, godot: str | None, full: bool) -> list[str]:
     (s.dir / "report.md").write_text(verdictmod.report(s, res, why, rep, v))
     spans = v["spans"]
     cut = "" if spans == [(0, v["frames"])] else f" (highlights: {len(spans)} windows of the {v['frames']} frames; --full for all)"
-    lines = [f"video: {v['mp4']}{cut}", f"gif: {v['gif']} ({v['gif_bytes'] // 1024} KB)"]
+    lines = [f"video: {v['mp4']}{cut}", f"gif: {v['gif']} ({v['gif_bytes'] // 1024} KB)"
+             + (f" — still over {replaymod.GIF_MAX // 1_000_000} MB at the smallest setting: share the MP4"
+                if v["gif_bytes"] > replaymod.GIF_MAX else "")]
     if v.get("sheet"):
         lines.append(f"contact sheet (read this to check the video): {v['sheet']}")
     if not v["matches_session"]:
         lines.append(f"WARNING: the rendered replay diverged from the session (by f={v.get('diverged_by')}): "
-                     "the video may not show what happened")
+                     "the video may not show what happened" + focus_note(v.get("input_lost")))
     return lines
 
 
@@ -443,7 +459,7 @@ def cmd_replay(args, project: Project) -> int:
            "not compared": "not compared (the session has no hashes)"}[r["result"]]
     extra = f" · crashed near f={r['crashed_at']}" if r["crashed_at"] is not None else (
         f" · hung at f={r['hung_at']}" if r["hung_at"] is not None else "")
-    _emit(args, None, f"replayed {s.id}: {r['frames']} frames, {msg}{extra}", r)
+    _emit(args, None, f"replayed {s.id}: {r['frames']} frames, {msg}{extra}{focus_note(r['input_lost'])}", r)
     return 0
 
 

@@ -167,16 +167,41 @@ def test_holds_released_while_frozen_are_pressed_again(proj, gl):
     The bridge presses the holds again, warns, and records it so the line still replays."""
     gl("start", "--scene", "res://clean.tscn", "--headless")
     gl("step", "-n", "10", "--hold", "move_right", "--quiet")
-    gl("eval", "Input.action_release('move_right')", "--write")   # what a focus change does to every hold
+    # what a focus change does to every hold, and the notification it sends
+    gl("eval", "[Input.action_release('move_right'), tree.root.propagate_notification(1005)]", "--write")
     x10 = float(gl("eval", "player.position.x").stdout)
     out = gl("step", "-n", "20", "--keep", "--quiet").stdout
-    assert "WARNING: Godot released move_right while the game was frozen" in out and "f=11" in out
+    assert "WARNING: Godot released move_right (its window gained or lost focus)" in out and "f=11" in out
     assert float(gl("eval", "player.position.x").stdout) > x10 + 50   # still walking
     line = [json.loads(x) for x in (_session(proj) / "inputs.jsonl").read_text().splitlines()]
     assert line == [{"f": 1, "action": "move_right", "pressed": True}, {"f": 11, "action": "move_right", "pressed": False},
                     {"f": 11, "action": "move_right", "pressed": True}]
     out = gl("end", "--verdict", "blocked", "--why", "x").stdout
     assert "replay check: exact" in out
+
+
+@pytest.mark.godot
+def test_holds_released_mid_step_are_pressed_again(proj, gl):
+    """A focus change in the middle of a step (a replay runs the whole line as one): the bridge
+    checks every frame, so the hold comes back on the next frame and the run still replays."""
+    gl("start", "--scene", "res://focus_out.tscn", "--headless")
+    out = gl("step", "-n", "60", "--hold", "move_right", "--quiet").stdout
+    assert "WARNING: Godot released move_right" in out and "f=30" in out, out
+    line = [json.loads(x) for x in (_session(proj) / "inputs.jsonl").read_text().splitlines()]
+    # the game ran frame 29 without the hold (the release came before its physics), then it's back on 30
+    assert {"f": 29, "action": "move_right", "pressed": False} in line and {"f": 30, "action": "move_right", "pressed": True} in line, line
+    assert float(gl("eval", "player.position.x").stdout) > 150   # walked on after it, not stopped at 30
+    assert "replay check: exact" in gl("end", "--verdict", "blocked", "--why", "x").stdout
+
+
+@pytest.mark.godot
+def test_a_release_by_the_game_itself_stays_released(proj, gl):
+    """Without a focus change, a released hold is the game's own doing: it isn't pressed again."""
+    gl("start", "--scene", "res://clean.tscn", "--headless")
+    gl("step", "-n", "10", "--hold", "move_right", "--quiet")
+    gl("eval", "Input.action_release('move_right')", "--write")
+    out = gl("step", "-n", "20", "--keep", "--quiet").stdout
+    assert "WARNING" not in out and gl("eval", "Input.is_action_pressed('move_right')").stdout.strip() == "false"
 
 
 @pytest.mark.godot
